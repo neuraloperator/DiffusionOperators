@@ -1,7 +1,9 @@
 import torch
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 import random
 import math
 import os 
+import argparse
 
 from timeit import default_timer
 
@@ -14,53 +16,100 @@ import numpy as np
 import scipy.io
 import matplotlib.pyplot as plt
 
+from tqdm import tqdm
+import glob
+
 device = torch.device('cuda:0')
 
-L = 10
-sigma_1 = 1.0
-sigma_L = 0.01
-npad = 8
+L = 10              ##
+sigma_1 = 1.0       ##
+sigma_L = 0.01      ##
+npad = 8            ##
 sigma = sigma_sequence(sigma_1, sigma_L, L).to(device)
-Ntest = 5
-d_co_domain = 32
+Ntest = 5           ##
+d_co_domain = 32    ##
 
-batch_size = 16
-epochs = 300
-record_int = 10
+batch_size = 16     ##
+epochs = 300        ##
+record_int = 10     ##
 
 s = 128 - 8
 h = 2*math.pi/s
 
+def count_params(model):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    return params
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="")
+    #parser.add_argument('--datadir', type=str, default="")
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--record_interval", type=int, default=10)
+    parser.add_argument("--L", type=int, default=10,
+                        description="Number of noise scales (timesteps)")
+    parser.add_argument("--sigma_1", type=float, default=1.0)
+    parser.add_argument("--sigma_L", type=float, default=0.01)   
+    parser.add_argument("--npad", type=int, default=8)
+    parser.add_argument("--Ntest", type=int, default=5)
+    args = parser.parse_args()
+    return args
 
 #Inport data
 
-import glob
-ntrain = 4096
-res = 128-8
-files = glob.glob('/mount/data/InSAR_Volcano/**/*.int', recursive=True)[:ntrain]
-x_train = torch.zeros(ntrain, res, res, 2).float()
-for i, f in enumerate(files):
-    dtype = np.float32
-    nline = 128
-    nsamp = 128
+class VolcanoDataset(Dataset):
 
-    with open(f, 'rb') as fn:
-        load_arr = np.frombuffer(fn.read(), dtype=dtype)
-        img = np.array(load_arr.reshape((nline, nsamp, -1)))
+    def __init__(self, root, ntrain=4096):
 
-    phi = np.angle(img[:,:,0] + img[:,:,1]*1j)
-    x_train[i,:,:,0] = torch.cos(torch.tensor(phi[:res, :res]))
-    x_train[i,:,:,1] = torch.sin(torch.tensor(phi[:res, :res]))    
+        super().__init__()
 
-# data = torch.load('/home/nikola/HDD/NavierStokes/2D/nsforcing_128_train.pt')['y']
+        res = 128-8
+        files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
+        if len(files) == 0:
+            raise Exception("Cannot find any *.int files here.")
+        print("# files detected: {}".format(len(files)))
 
-data_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x_train), batch_size=batch_size, shuffle=True)
+        x_train = torch.zeros(ntrain, res, res, 2).float()
+        nline = 128
+        nsamp = 128
+        for i, f in enumerate(files):
+            dtype = np.float32
 
+            with open(f, 'rb') as fn:
+                load_arr = np.frombuffer(fn.read(), dtype=dtype)
+                img = np.array(load_arr.reshape((nline, nsamp, -1)))
+
+            phi = np.angle(img[:,:,0] + img[:,:,1]*1j)
+            x_train[i,:,:,0] = torch.cos(torch.tensor(phi[:res, :res]))
+            x_train[i,:,:,1] = torch.sin(torch.tensor(phi[:res, :res]))
+
+        self.x_train = x_train
+
+    def __len__(self):
+        return len(self.x_train)
+
+    def __getitem__(self, idc):
+        return self.x_train[idc]
+
+    def __extra_repr__(self):
+        return "shape={}, min={}, max={}".format(len(self.x_train), 
+                                                 self.x_train.min(), 
+                                                 self.x_train.max())
+
+datadir = os.environ.get("DATA_DIR", None)
+if datadir is None:
+    raise ValueError("Environment variable DATA_DIR must be set")
+
+train_dataset = VolcanoDataset(root=datadir)
+data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+import pdb; pdb.set_trace()
 
 
 # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
 fno = UNO(2+3, d_co_domain, s = s, pad=npad).to(device)
+print("# of trainable parameters: {}".format(count_params(fno)))
 fno = fno.to(device)
 optimizer = torch.optim.Adam(fno.parameters(), lr=1e-3)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 50, gamma=0.5)
@@ -84,22 +133,31 @@ for ep in range(epochs):
     t1 = default_timer()
 
     fno.train()
+    pbar = tqdm(total=len(data_loader), desc="Epoch: {}".format(ep))
     for u in data_loader:
         optimizer.zero_grad()
 
-        u = u[0].to(device)
+        u = u.to(device)
         bsize = u.size(0)
 
         r = random.randint(0,L-1)
         noise = sigma[r]*noise_sampler.sample(bsize)
-        print()
+        
         # print('noise', noise.size())
         # print('u', u.size())
         # print('f(u)', fno(u, sigma[r].view(1,1)).size())
         # loss = ((h**2)/bsize)*((sigma[r]*torch.permute(fno(u + noise, sigma[r].view(1,1)), (0, 2, 3, 1)) + (1.0/sigma[r])*noise)**2).sum()
+
+        # TODO: verify that this loss is correct
         loss = ((h**2)/bsize)*((sigma[r]*fno(u + noise, sigma[r].view(1,1)) + (1.0/sigma[r])*noise)**2).sum()
 
+        
+
         loss.backward()
+        pbar.update(1)
+        pbar.set_postfix({
+            'loss': loss.item()
+        })
 
         optimizer.step()
 

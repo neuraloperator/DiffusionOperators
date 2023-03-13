@@ -217,10 +217,21 @@ class UNO(nn.Module):
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
 
     def forward(self, x, sigma):
+        """
+        Args:
+          x: of shape (bs, res, res, 2)
+          sigma: of shape (1,1)
+
+        Input is preprocessed so that x is transformed into the
+          shape (bs, res, res, 5), where 2 comes from the grid
+          and 1 comes from the time embedding.
+        """
+        
         bsize = x.size(0)
         grid = self.get_grid(x.shape, x.device)
         # print('time_size',self.time(sigma).view(1,self.s, self.s,1).size())
         time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
+        
         x = torch.cat((x, grid,time_embed), dim=-1)
 
         x_fc0 = self.fc0(x)
