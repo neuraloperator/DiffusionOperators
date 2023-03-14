@@ -8,7 +8,7 @@ import json
 
 from timeit import default_timer
 
-from utils import sigma_sequence, avg_spectrum, sample_trace, DotDict
+from utils import sigma_sequence, avg_spectrum, sample_trace, DotDict, circular_skew, circular_var
 from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct
 # from models import FNO2d, UNO
 from models import UNO
@@ -35,9 +35,6 @@ batch_size = 16     ##
 epochs = 300        ##
 record_int = 10     ##
 """
-
-s = 128 - 8
-h = 2*math.pi/s
 
 def count_params(model):
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -76,6 +73,9 @@ class VolcanoDataset(Dataset):
         if len(files) == 0:
             raise Exception("Cannot find any *.int files here.")
         print("# files detected: {}".format(len(files)))
+        if len(files) != ntrain:
+            raise ValueError("ntrain=={} but we only detected {} files".\
+                format(ntrain, len(files)))
 
         x_train = torch.zeros(ntrain, res, res, 2).float()
         nline = 128
@@ -119,11 +119,16 @@ if __name__ == '__main__':
     train_dataset = VolcanoDataset(root=datadir)
     data_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
+    s = 128 - 8
+    h = 2*math.pi/s
+
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
     fno = UNO(2+3, args.d_co_domain, s = s, pad=args.npad).to(device)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
     optimizer = torch.optim.Adam(fno.parameters(), lr=1e-3)
+
+    # TODO: keep an eye on this
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 50, gamma=0.5)
 
     # noise_sampler = PeriodicGaussianRF2d(s, s, alpha=1.5, tau=5, sigma=4.0, device=device)
@@ -133,8 +138,13 @@ if __name__ == '__main__':
     init_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=1, sigma = 1, device=device)
 
     sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
-    print("sigma: {} to {} for {} timesteps".format(args.sigma_1, args.sigma_L,
+    print("sigma: {} to {} for {} timesteps".format(args.sigma_1, 
+                                                    args.sigma_L,
                                                     args.L))
+
+    # Save config file
+    with open(os.path.join(savedir, "config.json"), "w") as f:
+        f.write(json.dumps(args))
 
     #plt.imshow(init_sampler.sample(1).cpu().view(s,s))
     #plt.colorbar()
@@ -178,14 +188,18 @@ if __name__ == '__main__':
                     buf[k] = []
                 buf[k].append(v)
 
-            if iter_ == 10:
-                break
+            #if iter_ == 10:
+            #    break
 
         pbar.close()
 
         buf = {k:np.mean(v) for k,v in buf.items()}
         buf["epoch"] = ep
+        buf["lr"] = optimizer.state_dict()['param_groups'][0]['lr']
+        buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         f_write.write(json.dumps(buf) + "\n")
+        f_write.flush()
+        print(json.dumps(buf))
         
         scheduler.step()
 

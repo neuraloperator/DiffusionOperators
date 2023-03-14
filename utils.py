@@ -1,6 +1,7 @@
 import torch
 import torch.fft as fft
 from tqdm import tqdm
+import numpy as np
 
 class DotDict(dict):
     """
@@ -13,6 +14,36 @@ class DotDict(dict):
     __getattr__ = dict.__getitem__
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
+
+
+def circular_var(x: torch.Tensor, dim=None):
+    """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
+    #R = torch.sqrt((x.mean(dim=(1,2))**2).sum(dim=1))
+    phase = torch.atan2(x[:,:,:,1], x[:,:,:,0])
+    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    
+    C1 = torch.cos(phase).sum(dim=(1,2))
+    S1 = torch.sin(phase).sum(dim=(1,2))
+    R1 = torch.sqrt(C1**2 + S1**2) / (phase.shape[1]*phase.shape[2])
+    return 1 - R1
+
+def circular_skew(x: torch.Tensor):
+    """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
+    phase = torch.atan2(x[:,:,:,1], x[:,:,:,0])
+    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    
+    C1 = torch.cos(phase).sum(dim=(1,2))
+    S1 = torch.sin(phase).sum(dim=(1,2))
+    R1 = torch.sqrt(C1**2 + S1**2) / (phase.shape[1]*phase.shape[2])
+    
+    C2 = torch.cos(2*phase).sum(dim=(1,2))
+    S2 = torch.sin(2*phase).sum(dim=(1,2))
+    R2 = torch.sqrt(C2**2 + S2**2) / (phase.shape[1]*phase.shape[2])
+    
+    T1 = torch.atan2(S1, C1)
+    T2 = torch.atan2(S2, C2)
+
+    return R2 * torch.sin(T2 - 2*T1) / (1 - R1)**(3/2)
 
 def sigma_sequence(sigma_1, sigma_L, L):
     a = (sigma_L/sigma_1)**(1.0/(L-1))
