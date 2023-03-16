@@ -1,4 +1,4 @@
-# NO_Diffusion
+# Diffusion Neural Operators
 The code to run experiment for Volcano data set.
 
 The dataset is provided here https://github.com/kazizzad/GANO
