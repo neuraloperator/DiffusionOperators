@@ -172,7 +172,7 @@ class UNO(nn.Module):
         output shape: (batchsize, x=s, y=s, c=1)
         """
         self.s = s
-        self.time = TimestepEmbedding(embed_dim, 2*self.s, self.s**2, pos_dim=1)
+        #self.time = TimestepEmbedding(embed_dim, 2*self.s, self.s**2, pos_dim=1)
         self.in_d_co_domain = in_d_co_domain # input channel
         self.d_co_domain = d_co_domain 
         self.factor = factor
@@ -216,7 +216,7 @@ class UNO(nn.Module):
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
 
-    def forward(self, x, sigma):
+    def forward(self, x, sigmas):
         """
         Args:
           x: of shape (bs, res, res, 2)
@@ -226,13 +226,17 @@ class UNO(nn.Module):
           shape (bs, res, res, 5), where 2 comes from the grid
           and 1 comes from the time embedding.
         """
+
+        # have a different time embedding per minibatch
+        # + as suggested in improved techniques paper, just redefine
+        # s(x,sigma) = s(x) / sigma instead.
         
         bsize = x.size(0)
         grid = self.get_grid(x.shape, x.device)
         # print('time_size',self.time(sigma).view(1,self.s, self.s,1).size())
-        time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
+        #time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
         
-        x = torch.cat((x, grid,time_embed), dim=-1)
+        x = torch.cat((x, grid), dim=-1)
 
         x_fc0 = self.fc0(x)
         x_fc0 = F.gelu(x_fc0)
@@ -305,7 +309,7 @@ class UNO(nn.Module):
         
         x_out = torch.tanh(x_out)
         
-        return x_out
+        return x_out / sigmas.view(-1, 1, 1, 1)
     
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]

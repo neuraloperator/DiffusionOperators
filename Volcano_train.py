@@ -56,6 +56,8 @@ def parse_args():
                         help="Number of noise scales (timesteps)")
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
+    parser.add_argument("--tau", type=float, default=1.0,
+                        help="Larger tau gives rougher (noisier) noise")
     parser.add_argument("--T", type=int, default=100,
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -163,7 +165,7 @@ if __name__ == '__main__':
     h = 2*math.pi/s
 
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
-    fno = UNO(2+3, args.d_co_domain, s = s, pad=args.npad).to(device)
+    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad).to(device)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
@@ -174,22 +176,26 @@ if __name__ == '__main__':
 
     # noise_sampler = PeriodicGaussianRF2d(s, s, alpha=1.5, tau=5, sigma=4.0, device=device)
     # init_sampler = PeriodicGaussianRF2d(s, s, alpha=1.1, tau=0.1, sigma=1.0, device=device)
-    noise_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=1, sigma = 0.1, device=device)
-    # init_sampler = GaussianRF_idct(s, s, alpha=1.1, tau=0.1, sigma = 8, device=device)
-    init_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=1, sigma = 1, device=device)
+
+    # z_t ~ N(0,I), as per annealed SGLD algorithm
+    noise_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=args.tau, sigma = 1.0, device=device)
+    # init x0, this can come from any distribution but lets also make it N(0,I).
+    init_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=args.tau, sigma = 1.0, device=device)
+
+    if args.sigma_1 < args.sigma_L:
+        raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
+            "decreasing. You probably need to switch these two arguments around.")
 
     sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
-    print("sigma: {} to {} for {} timesteps".format(args.sigma_1, 
-                                                    args.sigma_L,
-                                                    args.L))
+    print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
+        sigma[0],
+        sigma[-1],
+        args.L
+    ))
 
     # Save config file
     with open(os.path.join(savedir, "config.json"), "w") as f:
         f.write(json.dumps(args))
-
-    #plt.imshow(init_sampler.sample(1).cpu().view(s,s))
-    #plt.colorbar()
-    #plt.savefig('test.png')
 
     # Compute the circular variance and skew on the training set
     # and save this to the experiment folder.
@@ -211,16 +217,24 @@ if __name__ == '__main__':
             u = u.to(device)
             bsize = u.size(0)
 
-            r = random.randint(0,args.L-1)
-            noise = sigma[r]*noise_sampler.sample(bsize)
-            
-            # print('noise', noise.size())
-            # print('u', u.size())
-            # print('f(u)', fno(u, sigma[r].view(1,1)).size())
-            # loss = ((h**2)/bsize)*((sigma[r]*torch.permute(fno(u + noise, sigma[r].view(1,1)), (0, 2, 3, 1)) + (1.0/sigma[r])*noise)**2).sum()
+            # for x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
+            #   || \sigma_i*score_fn(x, \sigma_i) + (x - x0) / \sigma_i ||_2
+            # = || \sigma_i*score_fn(x0+noise, \sigma_i) + (x0 + noise - x0) / \sigma_i||_2
+            # = || \sigma_i*score_fn(x0+noise, \sigma_i) + (noise) / \sigma_i||_2
+            # NOTE: if we use the trick from "Improved techniques for SBGMs" paper then:
+            # score_fn(x0+noise, \sigma_i) = score_fn(x0+noise) / \sigma_i,
+            # which we can just implement inside the unet's forward() method
+            # loss = || \sigma_i*(score_fn(x0+noise) / \sigma_i) + (noise) / \sigma_i||_2
 
-            # TODO: verify that this loss is correct
-            loss = ((h**2)/bsize) * ((sigma[r]*fno(u + noise, sigma[r].view(1,1)) + (1.0/sigma[r])*noise)**2).sum()
+            # Sample a noise scale per element in the minibatch
+            perm = torch.randperm(sigma.size(0))[0:bsize]
+            this_sigmas = sigma[perm].view(-1, 1)
+            # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
+            noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
+            # term1 = score_fn(x0+noise)
+            term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, this_sigmas)
+            term2 =  noise / this_sigmas.view(-1, 1, 1, 1)
+            loss = ((term1+term2)**2).mean()
 
             loss.backward()
             optimizer.step()
