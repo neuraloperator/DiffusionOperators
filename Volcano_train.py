@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torchvision.utils import save_image
 import random
 import math
 import os 
@@ -58,6 +59,10 @@ def parse_args():
     parser.add_argument("--sigma_L", type=float, default=0.01)
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Larger tau gives rougher (noisier) noise")
+    parser.add_argument("--alpha", type=float, default=1.5,
+                        help="TODO")
+    parser.add_argument("--factor", type=float, default=3/4,
+                        help="Width multiplier for U-Net")
     parser.add_argument("--T", type=int, default=100,
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -146,6 +151,21 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     assert len(buf) == n_examples
     return buf, fn_outputs
 
+def plot_samples(samples: torch.Tensor, outfile: str, figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    samples = samples.cpu().numpy()
+    numb_fig = samples.shape[0]
+    fig, ax = plt.subplots(1, numb_fig, figsize=figsize)
+    for i in range(numb_fig):
+        bar = ax[i].imshow(samples[i,:,:,0], extent=[0,1,0,1])
+    cax = fig.add_axes([ax[numb_fig-1].get_position().x1+0.01,
+                        ax[numb_fig-1].get_position().y0,0.02,
+                        ax[numb_fig-1].get_position().height])
+    plt.colorbar(bar, cax=cax)
+    plt.savefig(outfile, bbox_inches='tight')
+
 if __name__ == '__main__':
 
     args = DotDict(vars(parse_args()))
@@ -165,7 +185,7 @@ if __name__ == '__main__':
     h = 2*math.pi/s
 
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
-    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad).to(device)
+    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, factor=args.factor).to(device)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
@@ -178,9 +198,20 @@ if __name__ == '__main__':
     # init_sampler = PeriodicGaussianRF2d(s, s, alpha=1.1, tau=0.1, sigma=1.0, device=device)
 
     # z_t ~ N(0,I), as per annealed SGLD algorithm
-    noise_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=args.tau, sigma = 1.0, device=device)
+    noise_sampler = GaussianRF_idct(s, s, alpha=args.alpha , tau=args.tau, sigma = 1.0, device=device)
     # init x0, this can come from any distribution but lets also make it N(0,I).
-    init_sampler = GaussianRF_idct(s, s, alpha=1.5, tau=args.tau, sigma = 1.0, device=device)
+    init_sampler = GaussianRF_idct(s, s, alpha=args.alpha, tau=args.tau, sigma = 1.0, device=device)
+
+    init_samples = init_sampler.sample(5).cpu()
+    for ext in ['png', 'pdf']:
+        plot_samples(
+            init_samples, 
+            os.path.join(savedir, "noise", "init_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext)))
+    noise_samples = noise_sampler.sample(5).cpu()
+    for ext in ['png', 'pdf']:
+        plot_samples(
+            noise_samples, 
+            os.path.join(savedir, "noise", "noise_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext)))
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
