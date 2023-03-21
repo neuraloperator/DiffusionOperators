@@ -151,7 +151,7 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     assert len(buf) == n_examples
     return buf, fn_outputs
 
-def plot_samples(samples: torch.Tensor, outfile: str, figsize=(16,4)):
+def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
         os.makedirs(basedir)
@@ -164,6 +164,30 @@ def plot_samples(samples: torch.Tensor, outfile: str, figsize=(16,4)):
                         ax[numb_fig-1].get_position().y0,0.02,
                         ax[numb_fig-1].get_position().height])
     plt.colorbar(bar, cax=cax)
+    plt.savefig(outfile, bbox_inches='tight')
+
+def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    num_fig = samples.size(0)
+    fig, ax = plt.subplots(1, num_fig, figsize=figsize)
+    for j in range(num_fig):
+        phase = torch.atan2(samples[j,:,:,1], 
+                            samples[j,:,:,0]).cpu().detach().numpy()
+        phase = (phase + np.pi) % (2 * np.pi) - np.pi
+        bar = ax[j].imshow(phase,  
+                           cmap='RdYlBu', 
+                           vmin = -np.pi, 
+                           vmax=np.pi,extent=[0,1,0,1])
+    cax = fig.add_axes(
+        [ax[num_fig-1].get_position().x1+0.01,
+         ax[num_fig-1].get_position().y0,0.02,
+         ax[num_fig-1].get_position().height]
+    )
+    if title is not None:
+        fig.suptitle(title)
+    plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
     plt.savefig(outfile, bbox_inches='tight')
 
 if __name__ == '__main__':
@@ -191,27 +215,48 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
     print(optimizer)
 
-    # TODO: keep an eye on this
-    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 50, gamma=0.5)
-
-    # noise_sampler = PeriodicGaussianRF2d(s, s, alpha=1.5, tau=5, sigma=4.0, device=device)
-    # init_sampler = PeriodicGaussianRF2d(s, s, alpha=1.1, tau=0.1, sigma=1.0, device=device)
-
     # z_t ~ N(0,I), as per annealed SGLD algorithm
-    noise_sampler = GaussianRF_idct(s, s, alpha=args.alpha , tau=args.tau, sigma = 1.0, device=device)
-    # init x0, this can come from any distribution but lets also make it N(0,I).
-    init_sampler = GaussianRF_idct(s, s, alpha=args.alpha, tau=args.tau, sigma = 1.0, device=device)
+    noise_sampler = GaussianRF_idct(s, s,
+                                    alpha=args.alpha, 
+                                    tau=args.tau, 
+                                    sigma = 1.0, 
+                                    device=device)
+    init_sampler = GaussianRF_idct(s, s, 
+                                   alpha=args.alpha, 
+                                   tau=args.tau, 
+                                   sigma = args.sigma_1,
+                                   device=device)
 
     init_samples = init_sampler.sample(5).cpu()
     for ext in ['png', 'pdf']:
-        plot_samples(
+        plot_noise(
             init_samples, 
-            os.path.join(savedir, "noise", "init_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext)))
+            os.path.join(
+                savedir, 
+                "noise", 
+                "init_samples_tau{}_alpha{}_sigma{}.{}".format(
+                    args.tau, 
+                    args.alpha,
+                    args.sigma_1, 
+                    ext
+                )
+            )
+        )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ['png', 'pdf']:
-        plot_samples(
+        plot_noise(
             noise_samples, 
-            os.path.join(savedir, "noise", "noise_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext)))
+            os.path.join(
+                savedir, 
+                "noise", 
+                # implicit that sigma here == 1.0
+                "noise_samples_tau{}_alpha{}.{}".format(
+                    args.tau, 
+                    args.alpha, 
+                    ext
+                )
+            )
+        )
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
@@ -236,6 +281,7 @@ if __name__ == '__main__':
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
+    best_skew, best_var = np.inf, np.inf
     for ep in range(args.epochs):
         t1 = default_timer()
 
@@ -261,6 +307,7 @@ if __name__ == '__main__':
             perm = torch.randperm(sigma.size(0))[0:bsize]
             this_sigmas = sigma[perm].view(-1, 1)
             # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
+
             noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
             # term1 = score_fn(x0+noise)
             term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, this_sigmas)
@@ -281,7 +328,7 @@ if __name__ == '__main__':
                     buf[k] = []
                 buf[k].append(v)
 
-            #if iter_ == 10:
+            #if iter_ == 10: # TODO add debug flag
             #    break
 
         pbar.close()        
@@ -299,65 +346,58 @@ if __name__ == '__main__':
             )
             skew_generated = fn_outs['skew']
             var_generated = fn_outs['var']
+
             # Dump this out to disk as well.
-            with open(os.path.join(savedir, "stats.pkl"), "wb") as f:
-                pickle.dump(dict(var=var_generated, skew=skew_generated), f)
 
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
 
-            print("w total:", w_total)
+            for ext in ['pdf', 'png']:
+                plot_samples(
+                    u[0:5], 
+                    outfile=os.path.join(
+                        savedir, 
+                        "samples",
+                        "{}.{}".format(ep+1, ext)
+                    )
+                )                                                      
+            # Keep track of best skew metric, and save
+            # its samples.
+            if w_skew < best_skew:
+                best_skew = w_skew
+                for ext in ['pdf', 'png']:
+                    plot_samples(
+                        u[0:5], 
+                        outfile=os.path.join(
+                            savedir, 
+                            "samples",
+                            "best_skew.{}".format(ext)
+                        ),                        title=str(dict(epoch=ep+1, skew=best_skew))
+                    )                         
+                with open(os.path.join(savedir, "samples", "best_skew.pkl"), "wb") as f:
+                    pickle.dump(
+                        dict(var=var_generated, skew=skew_generated), f
+                    )
 
-            #import pdb; pdb.set_trace()
-
-            #stats[k, (ep+1)//record_int -1, 0] = train_err
-            #stats[k, (ep+1)//record_int -1, 1] = max_err
-            #stats[k, (ep+1)//record_int -1, 2] = l2_err
-            #stats[k, (ep+1)//record_int -1, 3] = Ntest - u.size(0)
-            
-            path  = os.path.join(savedir,
-                                 'ns_noise_400_point1_noise_15_1_UNO_init',
-                                 str(s),
-                                 str(ep+1))
-            path_Figure = os.path.join(
-                savedir,
-                'ns_noise_400_point1_noise_15_1_UNO_init',
-                str(s),
-                'Figure' 
-            )
-            if not os.path.exists(path):
-                os.makedirs(path)
-            if not os.path.exists(path_Figure):
-                os.makedirs(path_Figure)
-
-            torch.save(fno.state_dict(), path + 'model.pt')
-
-            #u = u.cpu()
-            # for j in range(u.size(0)):
-            #     plt.figure(j)
-            #     plt.imshow(u[j,:,:].view(s,s))
-            #     plt.colorbar()
-            #     plt.savefig(path + str(j) + '.png')
-            #     plt.close()
-
-            #with torch.no_grad():
-            #    var_generated = circular_var(u).numpy()
-            #    skew_generated = circular_skew(u).numpy()
-
-            Nplot = 5
-            u_subset = u[0:Nplot]
-            fig, ax = plt.subplots(1, Nplot, figsize=(16,4))
-            for j in range(u_subset.size(0)):
-                phase = torch.atan2(u_subset[j,:,:,1], u_subset[j,:,:,0]).cpu().detach().numpy()
-                phase = (phase + np.pi) % (2 * np.pi) - np.pi
-                bar = ax[j].imshow(phase,  cmap='RdYlBu', vmin = -np.pi, vmax=np.pi,extent=[0,1,0,1])
-            cax = fig.add_axes([ax[Nplot-1].get_position().x1+0.01,
-                                ax[Nplot-1].get_position().y0,0.02,
-                                ax[Nplot-1].get_position().height])
-            plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
-            # print(path+'.pdf')
-            plt.savefig(path_Figure + str(ep+1)+'.pdf', bbox_inches='tight')
+            # Keep track of best var metric, and save
+            # its samples.
+            if w_var < best_var:
+                best_var = w_var
+                for ext in ['pdf', 'png']:
+                    plot_samples(
+                        u[0:5], 
+                        outfile=os.path.join(
+                            savedir, 
+                            "samples",
+                            "best_var.{}".format(ext)
+                        ),
+                        title=str(dict(epoch=ep+1, var=best_var))
+                    )
+                with open(os.path.join(savedir, "samples", "best_var.pkl"), "wb") as f:
+                    pickle.dump(
+                        dict(var=var_generated, skew=skew_generated), f
+                    )
             
             #print(ep+1, train_err, default_timer() - t1)
             
@@ -376,6 +416,13 @@ if __name__ == '__main__':
         f_write.write(json.dumps(buf) + "\n")
         f_write.flush()
         print(json.dumps(buf))
+
+        # Save checkpoints
+        torch.save(
+            dict(weights=fno.state_dict(), stats=buf),
+            os.path.join(savedir, "model.pt")
+        )
+        # Save early stopping checkpoints for skew and variance
 
 
     #scipy.io.savemat('gm_trace/stats.mat', {'stats': stats})
