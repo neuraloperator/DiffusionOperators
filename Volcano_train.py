@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset, Subset
 from torchvision.utils import save_image
 import random
 import math
@@ -52,11 +52,15 @@ def parse_args():
     parser.add_argument("--val_batch_size", type=int, default=512,
                         help="Batch size used for generating samples at inference time")
     parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--val_size", type=float, default=0.1,
+                        help="Size of the validation set (as a float in [0,1])")
     parser.add_argument("--record_interval", type=int, default=100)
     parser.add_argument("--L", type=int, default=10,
                         help="Number of noise scales (timesteps)")
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
+    parser.add_argument("--sigma_x0", type=float, default=1.0,
+                        help="Variance of the prior distribution")
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Larger tau gives rougher (noisier) noise")
     parser.add_argument("--alpha", type=float, default=1.5,
@@ -190,6 +194,37 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, figsize
     plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
     plt.savefig(outfile, bbox_inches='tight')
 
+
+def score_matching_loss(fno, u, sigma, noise_sampler):
+    """
+    Notes:
+
+    for x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
+      || \sigma_i*score_fn(x, \sigma_i) + (x - x0) / \sigma_i ||_2
+    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (x0 + noise - x0) / \sigma_i||_2
+    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (noise) / \sigma_i||_2
+
+    NOTE: if we use the trick from "Improved techniques for SBGMs" paper then:
+    score_fn(x0+noise, \sigma_i) = score_fn(x0+noise) / \sigma_i,
+    which we can just implement inside the unet's forward() method:
+
+    loss = || \sigma_i*(score_fn(x0+noise) / \sigma_i) + (noise) / \sigma_i||_2
+    """
+
+    bsize = u.size(0)
+    # Sample a noise scale per element in the minibatch
+    perm = torch.randperm(sigma.size(0))[0:bsize]
+    this_sigmas = sigma[perm].view(-1, 1)
+    # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
+    noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
+    # term1 = score_fn(x0+noise)
+    term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, this_sigmas)
+    term2 =  noise / this_sigmas.view(-1, 1, 1, 1)
+    loss = ((term1+term2)**2).mean()
+
+    return loss
+
+
 if __name__ == '__main__':
 
     args = DotDict(vars(parse_args()))
@@ -202,14 +237,30 @@ if __name__ == '__main__':
     datadir = os.environ.get("DATA_DIR", None)
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
-    train_dataset = VolcanoDataset(root=datadir)
-    data_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    full_dataset = VolcanoDataset(root=datadir)
+    rnd_state = np.random.RandomState(seed=0)
+    dataset_idcs = np.arange(0, len(full_dataset))
+    rnd_state.shuffle(dataset_idcs)
+    train_dataset = Subset(
+        full_dataset, 
+        dataset_idcs[0 : int(len(dataset_idcs)*(1-args.val_size)) ]
+    )
+    valid_dataset = Subset(
+        full_dataset, 
+        dataset_idcs[ int(len(dataset_idcs)*(1-args.val_size)) :: ]
+    )
+    print("Len of train / valid: {} / {}".format(len(train_dataset),
+                                                 len(valid_dataset)))
+          
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True)
 
     s = 128 - 8
     h = 2*math.pi/s
 
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
     fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, factor=args.factor).to(device)
+    print(fno)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
@@ -224,7 +275,7 @@ if __name__ == '__main__':
     init_sampler = GaussianRF_idct(s, s, 
                                    alpha=args.alpha, 
                                    tau=args.tau, 
-                                   sigma = args.sigma_1,
+                                   sigma = args.sigma_x0,
                                    device=device)
 
     init_samples = init_sampler.sample(5).cpu()
@@ -275,8 +326,8 @@ if __name__ == '__main__':
 
     # Compute the circular variance and skew on the training set
     # and save this to the experiment folder.
-    var_train = circular_var(train_dataset.x_train).numpy()
-    skew_train = circular_skew(train_dataset.x_train).numpy()
+    var_train = circular_var(train_dataset.dataset.x_train).numpy()
+    skew_train = circular_skew(train_dataset.dataset.x_train).numpy()
     with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
@@ -286,33 +337,14 @@ if __name__ == '__main__':
         t1 = default_timer()
 
         fno.train()
-        pbar = tqdm(total=len(data_loader), desc="{}/{}".format(ep, args.epochs))
+        pbar = tqdm(total=len(train_loader), desc="Train {}/{}".format(ep+1, args.epochs))
         buf = dict()
-        for iter_, u in enumerate(data_loader):
+        for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
 
             u = u.to(device)
-            bsize = u.size(0)
 
-            # for x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-            #   || \sigma_i*score_fn(x, \sigma_i) + (x - x0) / \sigma_i ||_2
-            # = || \sigma_i*score_fn(x0+noise, \sigma_i) + (x0 + noise - x0) / \sigma_i||_2
-            # = || \sigma_i*score_fn(x0+noise, \sigma_i) + (noise) / \sigma_i||_2
-            # NOTE: if we use the trick from "Improved techniques for SBGMs" paper then:
-            # score_fn(x0+noise, \sigma_i) = score_fn(x0+noise) / \sigma_i,
-            # which we can just implement inside the unet's forward() method
-            # loss = || \sigma_i*(score_fn(x0+noise) / \sigma_i) + (noise) / \sigma_i||_2
-
-            # Sample a noise scale per element in the minibatch
-            perm = torch.randperm(sigma.size(0))[0:bsize]
-            this_sigmas = sigma[perm].view(-1, 1)
-            # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
-
-            noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
-            # term1 = score_fn(x0+noise)
-            term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, this_sigmas)
-            term2 =  noise / this_sigmas.view(-1, 1, 1, 1)
-            loss = ((term1+term2)**2).mean()
+            loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
             optimizer.step()
@@ -331,12 +363,20 @@ if __name__ == '__main__':
             #if iter_ == 10: # TODO add debug flag
             #    break
 
-        pbar.close()        
+        pbar.close()     
+
+        fno.eval()
+        buf_valid = dict(loss_valid=[])
+        for iter_, u in enumerate(valid_loader):
+            u = u.to(device)
+            loss  = score_matching_loss(fno, u, sigma, noise_sampler)
+            # Update total statistics
+            buf_valid["loss_valid"].append(loss.item())
+   
         #scheduler.step()
 
         recorded = False
         if (ep + 1) % args.record_interval == 0:
-            fno.eval()
             recorded = True
 
             u, fn_outs = sample(
@@ -406,6 +446,7 @@ if __name__ == '__main__':
             pass
 
         buf = {k:np.mean(v) for k,v in buf.items()}
+        buf.update({k:np.mean(v) for k,v in buf_valid.items()})
         buf["epoch"] = ep
         buf["lr"] = optimizer.state_dict()['param_groups'][0]['lr']
         #buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
