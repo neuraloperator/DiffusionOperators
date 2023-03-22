@@ -93,7 +93,7 @@ class FNO2d(nn.Module):
 
 
 class SpectralConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, dim1, dim2,modes1 = None, modes2 = None):
+    def __init__(self, in_channels, out_channels, dim1, dim2, modes1 = None, modes2 = None):
         super(SpectralConv2d, self).__init__()
 
         """
@@ -121,6 +121,9 @@ class SpectralConv2d(nn.Module):
         return torch.einsum("bixy,ioxy->boxy", input, weights)
 
     def forward(self, x, dim1 = None,dim2 = None):
+
+        # ?? print(self.dim1, self.dim2, dim1, dim2)
+        
         if dim1 is not None:
             self.dim1 = dim1
             self.dim2 = dim2
@@ -139,9 +142,14 @@ class SpectralConv2d(nn.Module):
         x = torch.fft.irfft2(out_ft, s=(self.dim1, self.dim2))
         return x
 
+    def extra_repr(self):
+        return "in_channels={}, out_channels={}, dim1={}, dim2={}".format(
+            self.in_channels, self.out_channels, self.dim1, self.dim2
+        )
+
 
 class pointwise_op(nn.Module):
-    def __init__(self, in_channel, out_channel,dim1, dim2):
+    def __init__(self, in_channel, out_channel, dim1, dim2):
         super(pointwise_op,self).__init__()
         self.conv = nn.Conv2d(int(in_channel), int(out_channel), 1)
         self.dim1 = int(dim1)
@@ -155,6 +163,18 @@ class pointwise_op(nn.Module):
         x_out = torch.nn.functional.interpolate(x_out, size = (dim1, dim2),mode = 'bicubic',align_corners=True)
         return x_out
 
+class Block(nn.Module):
+    def __init__(self, in_channels, out_channels, dim1, dim2, modes1, modes2):
+        super().__init__()
+        self.conv0 = SpectralConv2d(in_channels, out_channels, dim1, dim2, modes1, modes2)
+        self.w0 = pointwise_op(in_channels, out_channels, dim1, dim2)
+    def forward(self, x, dim1, dim2):
+        x1_c0 = self.conv0(x, dim1, dim2)
+        x2_c0 = self.w0(x, dim1, dim2)
+        x_c0 = x1_c0 + x2_c0
+        x_c0 = F.gelu(x_c0)
+        return x_c0
+        
 class UNO(nn.Module):
     def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, factor = 3/4, embed_dim=512):
         super(UNO, self).__init__()
@@ -180,38 +200,16 @@ class UNO(nn.Module):
 
         self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
-        self.conv0 = SpectralConv2d(self.d_co_domain, 2*factor*self.d_co_domain, 48, 48, 24, 24)
 
-        self.conv1 = SpectralConv2d(2*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32, 16,16)
-
-        self.conv2 = SpectralConv2d(4*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16,8,8)
+        self.block1 = Block(self.d_co_domain, 2*factor*self.d_co_domain, 48, 48, 24, 24)
+        self.block2 = Block(2*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32, 16,16)
+        self.block3 = Block(4*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16, 8, 8)
+        self.block4 = Block(8*factor*self.d_co_domain, 16*factor*self.d_co_domain, 8, 8, 4,4)
         
-        self.conv2_1 = SpectralConv2d(8*factor*self.d_co_domain, 16*factor*self.d_co_domain, 8, 8,4,4)
-        
-        self.conv2_9 = SpectralConv2d(16*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16,4,4)
-        
-
-        self.conv3 = SpectralConv2d(16*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32,8,8)
-
-        self.conv4 = SpectralConv2d(8*factor*self.d_co_domain, 2*factor*self.d_co_domain, 48, 48,16,16)
-
-        self.conv5 = SpectralConv2d(4*factor*self.d_co_domain, self.d_co_domain, 64, 64,24,24) # will be reshaped
-
-        self.w0 = pointwise_op(self.d_co_domain,2*factor*self.d_co_domain,48, 48) #
-        
-        self.w1 = pointwise_op(2*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32) #
-        
-        self.w2 = pointwise_op(4*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16) #
-        
-        self.w2_1 = pointwise_op(8*factor*self.d_co_domain, 16*factor*self.d_co_domain, 8, 8)
-        
-        self.w2_9 = pointwise_op(16*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16)
-        
-        self.w3 = pointwise_op(16*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32) #
-        
-        self.w4 = pointwise_op(8*factor*self.d_co_domain, 2*factor*self.d_co_domain, 48, 48)
-        
-        self.w5 = pointwise_op(4*factor*self.d_co_domain, self.d_co_domain, 64, 64) # will be reshaped
+        self.inv2_9 = Block(16*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16,4,4)
+        self.inv3 = Block(16*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32,8,8)
+        self.inv4 = Block(8*factor*self.d_co_domain, 2*factor*self.d_co_domain, 48, 48,16,16)
+        self.inv5 = Block(4*factor*self.d_co_domain, self.d_co_domain, 64, 64,24,24) # will be reshaped
 
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
@@ -248,55 +246,70 @@ class UNO(nn.Module):
         
         D1,D2 = x_fc0.shape[-2],x_fc0.shape[-1]
         
-
-        x1_c0 = self.conv0(x_fc0,int(D1*self.factor),int(D2*self.factor))
-        x2_c0 = self.w0(x_fc0,int(D1*self.factor),int(D2*self.factor))
-        x_c0 = x1_c0 + x2_c0
-        x_c0 = F.gelu(x_c0)
+        x_c0 = self.block1(x_fc0, int(D1*self.factor),int(D2*self.factor))
+        
+        #x1_c0 = self.conv0(x_fc0,int(D1*self.factor),int(D2*self.factor))
+        #x2_c0 = self.w0(x_fc0,int(D1*self.factor),int(D2*self.factor))
+        #x_c0 = x1_c0 + x2_c0
+        #x_c0 = F.gelu(x_c0)
         #print(x.shape)
 
-        x1_c1 = self.conv1(x_c0 ,D1//2,D2//2)
-        x2_c1 = self.w1(x_c0 ,D1//2,D2//2)
-        x_c1 = x1_c1 + x2_c1
-        x_c1 = F.gelu(x_c1)
+        #x1_c1 = self.conv1(x_c0 ,D1//2,D2//2)
+        #x2_c1 = self.w1(x_c0 ,D1//2,D2//2)
+        #x_c1 = x1_c1 + x2_c1
+        #x_c1 = F.gelu(x_c1)
+        x_c1 = self.block2(x_c0 ,D1//2,D2//2)
         #print(x.shape)
 
-        x1_c2 = self.conv2(x_c1 ,D1//4,D2//4)
-        x2_c2 = self.w2(x_c1 ,D1//4,D2//4)
-        x_c2 = x1_c2 + x2_c2
-        x_c2 = F.gelu(x_c2 )
+        #x1_c2 = self.conv2(x_c1 ,D1//4,D2//4)
+        #x2_c2 = self.w2(x_c1 ,D1//4,D2//4)
+        #x_c2 = x1_c2 + x2_c2
+        #x_c2 = F.gelu(x_c2 )
         #print(x.shape)
+        x_c2 = self.block3(x_c1, D1//4, D2//4)
+
+    
         
-        x1_c2_1 = self.conv2_1(x_c2,D1//8,D2//8)
-        x2_c2_1 = self.w2_1(x_c2,D1//8,D2//8)
-        x_c2_1 = x1_c2_1 + x2_c2_1
-        x_c2_1 = F.gelu(x_c2_1)
+        #x1_c2_1 = self.conv2_1(x_c2,D1//8,D2//8)
+        #x2_c2_1 = self.w2_1(x_c2,D1//8,D2//8)
+        #x_c2_1 = x1_c2_1 + x2_c2_1
+        #x_c2_1 = F.gelu(x_c2_1)
+        x_c2_1 = self.block4(x_c2, D1//8, D2//8)
+
         
-        x1_c2_9 = self.conv2_9(x_c2_1,D1//4,D2//4)
-        x2_c2_9 = self.w2_9(x_c2_1,D1//4,D2//4)
-        x_c2_9 = x1_c2_9 + x2_c2_9
-        x_c2_9 = F.gelu(x_c2_9)
-        x_c2_9 = torch.cat([x_c2_9, x_c2], dim=1) 
+        #x1_c2_9 = self.conv2_9(x_c2_1,D1//4,D2//4)
+        #x2_c2_9 = self.w2_9(x_c2_1,D1//4,D2//4)
+        #x_c2_9 = x1_c2_9 + x2_c2_9
+        #x_c2_9 = F.gelu(x_c2_9)
+        #x_c2_9 = torch.cat([x_c2_9, x_c2], dim=1) 
+        x_c2_9 = self.inv2_9(x_c2_1, D1//4, D2//4)
+        x_c2_9 = torch.cat((x_c2_9, x_c2), dim=1)
 
-        x1_c3 = self.conv3(x_c2_9,D1//2,D2//2)
-        x2_c3 = self.w3(x_c2_9,D1//2,D2//2)
-        x_c3 = x1_c3 + x2_c3
-        x_c3 = F.gelu(x_c3)
-        x_c3 = torch.cat([x_c3, x_c1], dim=1)
 
-        x1_c4 = self.conv4(x_c3,int(D1*self.factor),int(D2*self.factor))
-        x2_c4 = self.w4(x_c3,int(D1*self.factor),int(D2*self.factor))
-        x_c4 = x1_c4 + x2_c4
-        x_c4 = F.gelu(x_c4)
-        x_c4 = torch.cat([x_c4, x_c0], dim=1)
+        #x1_c3 = self.conv3(x_c2_9,D1//2,D2//2)
+        #x2_c3 = self.w3(x_c2_9,D1//2,D2//2)
+        #x_c3 = x1_c3 + x2_c3
+        #x_c3 = F.gelu(x_c3)
+        #x_c3 = torch.cat([x_c3, x_c1], dim=1)
+        x_c3 = self.inv3(x_c2_9,D1//2,D2//2)
+        x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        x1_c5 = self.conv5(x_c4,D1,D2)
-        x2_c5 = self.w5(x_c4,D1,D2)
-        x_c5 = x1_c5 + x2_c5
-        x_c5 = F.gelu(x_c5)
-        
+        #x1_c4 = self.conv4(x_c3,int(D1*self.factor),int(D2*self.factor))
+        #x2_c4 = self.w4(x_c3,int(D1*self.factor),int(D2*self.factor))
+        #x_c4 = x1_c4 + x2_c4
+        #x_c4 = F.gelu(x_c4)
+        #x_c4 = torch.cat([x_c4, x_c0], dim=1)
+        x_c4 = self.inv4(x_c3,int(D1*self.factor),int(D2*self.factor))
+        x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
-        x_c5 = torch.cat([x_c5, x_fc0], dim=1)
+        import pdb; pdb.set_trace()
+
+        x_c5 = self.inv5(x_c4, D1, D2)
+        #x1_c5 = self.conv5(x_c4,D1,D2)
+        #x2_c5 = self.w5(x_c4,D1,D2)
+        #x_c5 = x1_c5 + x2_c5
+        #x_c5 = F.gelu(x_c5)
+        x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         if self.padding!=0:
             x_c5 = x_c5[..., :-self.padding, :-self.padding]
 
