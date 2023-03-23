@@ -93,7 +93,7 @@ class FNO2d(nn.Module):
 
 
 class SpectralConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, dim1, dim2, modes1 = None, modes2 = None):
+    def __init__(self, in_channels, out_channels, modes1 = None, modes2 = None):
         super(SpectralConv2d, self).__init__()
 
         """
@@ -103,8 +103,6 @@ class SpectralConv2d(nn.Module):
         out_channels = int(out_channels)
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.dim1 = dim1 #output dimensions
-        self.dim2 = dim2
         if modes1 is not None:
             self.modes1 = modes1 #Number of Fourier modes to multiply, at most floor(N/2) + 1
             self.modes2 = modes2
@@ -120,63 +118,76 @@ class SpectralConv2d(nn.Module):
         # (batch, in_channel, x,y ), (in_channel, out_channel, x,y) -> (batch, out_channel, x,y)
         return torch.einsum("bixy,ioxy->boxy", input, weights)
 
-    def forward(self, x, dim1 = None,dim2 = None):
-
-        # ?? print(self.dim1, self.dim2, dim1, dim2)
-        
-        if dim1 is not None:
-            self.dim1 = dim1
-            self.dim2 = dim2
+    def forward(self, x, dim1, dim2):
         batchsize = x.shape[0]
         #Compute Fourier coeffcients up to factor of e^(- something constant)
         x_ft = torch.fft.rfft2(x)
 
         # Multiply relevant Fourier modes
-        out_ft = torch.zeros(batchsize, self.out_channels,  self.dim1, self.dim2//2 + 1 , dtype=torch.cfloat, device=x.device)
+        out_ft = torch.zeros(batchsize, self.out_channels,  dim1, dim2//2 + 1 , dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1, :self.modes2] = \
             self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1)
         out_ft[:, :, -self.modes1:, :self.modes2] = \
             self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2)
 
         #Return to physical space
-        x = torch.fft.irfft2(out_ft, s=(self.dim1, self.dim2))
+        x = torch.fft.irfft2(out_ft, s=(dim1, dim2))
         return x
 
     def extra_repr(self):
-        return "in_channels={}, out_channels={}, dim1={}, dim2={}".format(
-            self.in_channels, self.out_channels, self.dim1, self.dim2
+        return "in_channels={}, out_channels={}".format(
+            self.in_channels, self.out_channels
         )
 
 
 class pointwise_op(nn.Module):
-    def __init__(self, in_channel, out_channel, dim1, dim2):
+    def __init__(self, in_channel, out_channel):
         super(pointwise_op,self).__init__()
         self.conv = nn.Conv2d(int(in_channel), int(out_channel), 1)
-        self.dim1 = int(dim1)
-        self.dim2 = int(dim2)
 
-    def forward(self,x, dim1 = None, dim2 = None):
-        if dim1 is None:
-            dim1 = self.dim1
-            dim2 = self.dim2
+    def forward(self,x, dim1, dim2):
         x_out = self.conv(x)
         x_out = torch.nn.functional.interpolate(x_out, size = (dim1, dim2),mode = 'bicubic',align_corners=True)
         return x_out
 
 class Block(nn.Module):
-    def __init__(self, in_channels, out_channels, dim1, dim2, modes1, modes2):
+    def __init__(self, in_channels, out_channels, modes1, modes2, groups=8):
         super().__init__()
-        self.conv0 = SpectralConv2d(in_channels, out_channels, dim1, dim2, modes1, modes2)
-        self.w0 = pointwise_op(in_channels, out_channels, dim1, dim2)
+        self.conv0 = SpectralConv2d(in_channels, out_channels, modes1, modes2)
+        self.w0 = pointwise_op(in_channels, out_channels) 
+        self.norm = nn.GroupNorm(groups, out_channels)
+        self.modes1 = modes1
+        self.modes2 = modes2
     def forward(self, x, dim1, dim2):
+        # spectral convolution
+        #print(x.shape, dim1, dim2, self.modes1, self.modes2, self.conv0)
+        #try:
         x1_c0 = self.conv0(x, dim1, dim2)
+        #except:
+        #    import pdb; pdb.set_trace()
         x2_c0 = self.w0(x, dim1, dim2)
         x_c0 = x1_c0 + x2_c0
-        x_c0 = F.gelu(x_c0)
+        # then apply norm then relu
+        x_c0 = F.gelu(self.norm(x_c0))
         return x_c0
+
+class ResnetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, modes1, modes2, groups=8):
+        super().__init__()
+        self.block1 = Block(in_channels, out_channels, 
+                            modes1, modes2, groups=groups)
+        self.block2 = Block(out_channels, out_channels, 
+                            modes1, modes2, groups=groups) 
+        self.res_conv = SpectralConv2d(in_channels, out_channels, 
+                                       modes1, modes2)
+    def forward(self, x, dim1, dim2):
+        #print(">>", x.shape)
+        h = self.block1(x, dim1, dim2)
+        h = self.block2(h, dim1, dim2)
+        return h + self.res_conv(x, dim1, dim2)
         
 class UNO(nn.Module):
-    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, factor = 3/4, embed_dim=512):
+    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
         super(UNO, self).__init__()
 
         """
@@ -195,21 +206,34 @@ class UNO(nn.Module):
         #self.time = TimestepEmbedding(embed_dim, 2*self.s, self.s**2, pos_dim=1)
         self.in_d_co_domain = in_d_co_domain # input channel
         self.d_co_domain = d_co_domain 
-        self.factor = factor
+        #self.factor = factor
         self.padding = pad  # pad the domain if input is non-periodic
 
         self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
+        # TODO
+        factor = int(factor)
 
-        self.block1 = Block(self.d_co_domain, 2*factor*self.d_co_domain, 48, 48, 24, 24)
-        self.block2 = Block(2*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32, 16,16)
-        self.block3 = Block(4*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16, 8, 8)
-        self.block4 = Block(8*factor*self.d_co_domain, 16*factor*self.d_co_domain, 8, 8, 4,4)
+        A = mult_dims
+
+        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, 24, 24)
+        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, 16,16)
+        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, 8, 8)
+        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, 4,4)
         
-        self.inv2_9 = Block(16*factor*self.d_co_domain, 8*factor*self.d_co_domain, 16, 16,4,4)
-        self.inv3 = Block(16*factor*self.d_co_domain, 4*factor*self.d_co_domain, 32, 32,8,8)
-        self.inv4 = Block(8*factor*self.d_co_domain, 2*factor*self.d_co_domain, 48, 48,16,16)
-        self.inv5 = Block(4*factor*self.d_co_domain, self.d_co_domain, 64, 64,24,24) # will be reshaped
+        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, 4,4)
+        # combine out channels of inv2_9 and block3
+        self.inv3 = ResnetBlock( (A[2]+A[2]) * self.d_co_domain, A[1]*self.d_co_domain, 8,8)
+        # combine out channels of inv3 and block2
+        self.inv4 = ResnetBlock( (A[1] + A[1]) * self.d_co_domain, A[0]*self.d_co_domain, 16,16)
+        # combine out channels of inv4 and block1
+        self.inv5 = ResnetBlock( (A[0] + A[0]) * self.d_co_domain, self.d_co_domain, 24,24) # will be reshaped
+
+        #self.inv2_9 = Block(A[3]*self.d_co_domain, A[2]*self.d_co_domain, 4,4)
+        #self.inv3 = Block(A[3]*self.d_co_domain, A[1]*self.d_co_domain, 8,8)
+        #self.inv4 = Block(A[2]*self.d_co_domain, A[0]*self.d_co_domain, 16,16)
+        #self.inv5 = Block(A[1]*self.d_co_domain, self.d_co_domain, 24,24) # will be reshaped
+
 
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
@@ -238,77 +262,30 @@ class UNO(nn.Module):
 
         x_fc0 = self.fc0(x)
         x_fc0 = F.gelu(x_fc0)
-        
         x_fc0 = x_fc0.permute(0, 3, 1, 2)
-        
-        
         x_fc0 = F.pad(x_fc0, [0,self.padding, 0,self.padding])
         
         D1,D2 = x_fc0.shape[-2],x_fc0.shape[-1]
-        
-        x_c0 = self.block1(x_fc0, int(D1*self.factor),int(D2*self.factor))
-        
-        #x1_c0 = self.conv0(x_fc0,int(D1*self.factor),int(D2*self.factor))
-        #x2_c0 = self.w0(x_fc0,int(D1*self.factor),int(D2*self.factor))
-        #x_c0 = x1_c0 + x2_c0
-        #x_c0 = F.gelu(x_c0)
-        #print(x.shape)
 
-        #x1_c1 = self.conv1(x_c0 ,D1//2,D2//2)
-        #x2_c1 = self.w1(x_c0 ,D1//2,D2//2)
-        #x_c1 = x1_c1 + x2_c1
-        #x_c1 = F.gelu(x_c1)
+        #print("x_Fc0: ", x_fc0.shape)
+        
+        x_c0 = self.block1(x_fc0, int(D1*3/4),int(D2*3/4))
         x_c1 = self.block2(x_c0 ,D1//2,D2//2)
-        #print(x.shape)
-
-        #x1_c2 = self.conv2(x_c1 ,D1//4,D2//4)
-        #x2_c2 = self.w2(x_c1 ,D1//4,D2//4)
-        #x_c2 = x1_c2 + x2_c2
-        #x_c2 = F.gelu(x_c2 )
-        #print(x.shape)
         x_c2 = self.block3(x_c1, D1//4, D2//4)
-
-    
-        
-        #x1_c2_1 = self.conv2_1(x_c2,D1//8,D2//8)
-        #x2_c2_1 = self.w2_1(x_c2,D1//8,D2//8)
-        #x_c2_1 = x1_c2_1 + x2_c2_1
-        #x_c2_1 = F.gelu(x_c2_1)
         x_c2_1 = self.block4(x_c2, D1//8, D2//8)
-
         
-        #x1_c2_9 = self.conv2_9(x_c2_1,D1//4,D2//4)
-        #x2_c2_9 = self.w2_9(x_c2_1,D1//4,D2//4)
-        #x_c2_9 = x1_c2_9 + x2_c2_9
-        #x_c2_9 = F.gelu(x_c2_9)
-        #x_c2_9 = torch.cat([x_c2_9, x_c2], dim=1) 
         x_c2_9 = self.inv2_9(x_c2_1, D1//4, D2//4)
         x_c2_9 = torch.cat((x_c2_9, x_c2), dim=1)
 
+        #print("-----------")
 
-        #x1_c3 = self.conv3(x_c2_9,D1//2,D2//2)
-        #x2_c3 = self.w3(x_c2_9,D1//2,D2//2)
-        #x_c3 = x1_c3 + x2_c3
-        #x_c3 = F.gelu(x_c3)
-        #x_c3 = torch.cat([x_c3, x_c1], dim=1)
         x_c3 = self.inv3(x_c2_9,D1//2,D2//2)
         x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        #x1_c4 = self.conv4(x_c3,int(D1*self.factor),int(D2*self.factor))
-        #x2_c4 = self.w4(x_c3,int(D1*self.factor),int(D2*self.factor))
-        #x_c4 = x1_c4 + x2_c4
-        #x_c4 = F.gelu(x_c4)
-        #x_c4 = torch.cat([x_c4, x_c0], dim=1)
-        x_c4 = self.inv4(x_c3,int(D1*self.factor),int(D2*self.factor))
+        x_c4 = self.inv4(x_c3,int(D1*3/4),int(D2*3/4))
         x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
-        import pdb; pdb.set_trace()
-
         x_c5 = self.inv5(x_c4, D1, D2)
-        #x1_c5 = self.conv5(x_c4,D1,D2)
-        #x2_c5 = self.w5(x_c4,D1,D2)
-        #x_c5 = x1_c5 + x2_c5
-        #x_c5 = F.gelu(x_c5)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         if self.padding!=0:
             x_c5 = x_c5[..., :-self.padding, :-self.padding]
