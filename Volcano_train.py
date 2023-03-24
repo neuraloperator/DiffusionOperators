@@ -55,6 +55,7 @@ def parse_args():
     parser.add_argument("--val_size", type=float, default=0.1,
                         help="Size of the validation set (as a float in [0,1])")
     parser.add_argument("--record_interval", type=int, default=100)
+    parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
     parser.add_argument("--L", type=int, default=10,
                         help="Number of noise scales (timesteps)")
     parser.add_argument("--sigma_1", type=float, default=1.0)
@@ -259,7 +260,7 @@ if __name__ == '__main__':
     h = 2*math.pi/s
 
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
-    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, factor=args.factor).to(device)
+    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, mult_dims=args.mult_dims).to(device)
     print(fno)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)

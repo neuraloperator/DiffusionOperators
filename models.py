@@ -123,6 +123,8 @@ class SpectralConv2d(nn.Module):
         #Compute Fourier coeffcients up to factor of e^(- something constant)
         x_ft = torch.fft.rfft2(x)
 
+        #print(x.shape, self.modes1, self.modes2)
+
         # Multiply relevant Fourier modes
         out_ft = torch.zeros(batchsize, self.out_channels,  dim1, dim2//2 + 1 , dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1, :self.modes2] = \
@@ -135,8 +137,8 @@ class SpectralConv2d(nn.Module):
         return x
 
     def extra_repr(self):
-        return "in_channels={}, out_channels={}".format(
-            self.in_channels, self.out_channels
+        return "in_channels={}, out_channels={}, modes1={}, modes2={}".format(
+            self.in_channels, self.out_channels, self.modes1, self.modes2
         )
 
 
@@ -211,23 +213,23 @@ class UNO(nn.Module):
 
         self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
-        # TODO
-        factor = int(factor)
 
         A = mult_dims
 
-        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, 24, 24)
-        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, 16,16)
-        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, 8, 8)
-        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, 4,4)
+        # Currently assumes 128px input.
+
+        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, 24*2, 24*2)
+        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, 16*2,16*2)
+        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, 8*2, 8*2)
+        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, 4*2, 4*2)
         
-        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, 4,4)
+        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, 4*2,4*2)
         # combine out channels of inv2_9 and block3
-        self.inv3 = ResnetBlock( (A[2]+A[2]) * self.d_co_domain, A[1]*self.d_co_domain, 8,8)
+        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, 8*2,8*2)
         # combine out channels of inv3 and block2
-        self.inv4 = ResnetBlock( (A[1] + A[1]) * self.d_co_domain, A[0]*self.d_co_domain, 16,16)
+        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, 16*2,16*2)
         # combine out channels of inv4 and block1
-        self.inv5 = ResnetBlock( (A[0] + A[0]) * self.d_co_domain, self.d_co_domain, 24,24) # will be reshaped
+        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, 24*2,24*2) # will be reshaped
 
         #self.inv2_9 = Block(A[3]*self.d_co_domain, A[2]*self.d_co_domain, 4,4)
         #self.inv3 = Block(A[3]*self.d_co_domain, A[1]*self.d_co_domain, 8,8)
@@ -269,8 +271,8 @@ class UNO(nn.Module):
 
         #print("x_Fc0: ", x_fc0.shape)
         
-        x_c0 = self.block1(x_fc0, int(D1*3/4),int(D2*3/4))
-        x_c1 = self.block2(x_c0 ,D1//2,D2//2)
+        x_c0 = self.block1(x_fc0, int(D1*3/4), int(D2*3/4))
+        x_c1 = self.block2(x_c0, D1//2, D2//2)
         x_c2 = self.block3(x_c1, D1//4, D2//4)
         x_c2_1 = self.block4(x_c2, D1//8, D2//8)
         
@@ -279,10 +281,10 @@ class UNO(nn.Module):
 
         #print("-----------")
 
-        x_c3 = self.inv3(x_c2_9,D1//2,D2//2)
+        x_c3 = self.inv3(x_c2_9, D1//2, D2//2)
         x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        x_c4 = self.inv4(x_c3,int(D1*3/4),int(D2*3/4))
+        x_c4 = self.inv4(x_c3, int(D1*3/4), int(D2*3/4))
         x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
         x_c5 = self.inv5(x_c4, D1, D2)
@@ -296,8 +298,6 @@ class UNO(nn.Module):
         x_fc1 = F.gelu(x_fc1)
         
         x_out = self.fc2(x_fc1)
-        
-        x_out = torch.tanh(x_out)
         
         return x_out / sigmas.view(-1, 1, 1, 1)
     
