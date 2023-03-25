@@ -75,11 +75,12 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         pbar = tqdm(total=L, desc="sample_trace()")
     for j in range(L):
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
+        curr_j = torch.LongTensor([j]*x0.size(0)).to(x0.device)
         for t in range(T):
             if j == L - 1 and t == T - 1:
-                x0 = x0 + 0.5*alpha*score(x0, sigma[j].view(1,1))
+                x0 = x0 + 0.5*alpha*score(x0, curr_j)
             else:
-                x0 = x0 + 0.5*alpha*score(x0, sigma[j].view(1,1)) + torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
+                x0 = x0 + 0.5*alpha*score(x0, curr_j) + torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
         if verbose:
             pbar.update(1)
     if verbose:

@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from einops import rearrange, reduce
+
 import copy
+import math
 
 # from neuralop.models.tfno import FactorizedFNO1d, FactorizedFNO2d
 from time_embedding import TimestepEmbedding
@@ -160,7 +163,7 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(groups, out_channels)
         self.modes1 = modes1
         self.modes2 = modes2
-    def forward(self, x, dim1, dim2):
+    def forward(self, x, dim1, dim2, scale_shift=None):
         # spectral convolution
         #print(x.shape, dim1, dim2, self.modes1, self.modes2, self.conv0)
         #try:
@@ -169,12 +172,17 @@ class Block(nn.Module):
         #    import pdb; pdb.set_trace()
         x2_c0 = self.w0(x, dim1, dim2)
         x_c0 = x1_c0 + x2_c0
-        # then apply norm then relu
-        x_c0 = F.gelu(self.norm(x_c0))
-        return x_c0
+        # then apply norm
+        x_c0 = self.norm(x_c0)
+        # then scale and shift if exists
+        if scale_shift is not None:
+            scale, shift = scale_shift
+            x_c0 = x_c0 * (scale + 1) + shift
+        # then relu
+        return F.gelu(x_c0)
 
 class ResnetBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, modes1, modes2, groups=8):
+    def __init__(self, in_channels, out_channels, time_dim, modes1, modes2, groups=8):
         super().__init__()
         self.block1 = Block(in_channels, out_channels, 
                             modes1, modes2, groups=groups)
@@ -182,11 +190,35 @@ class ResnetBlock(nn.Module):
                             modes1, modes2, groups=groups) 
         self.res_conv = SpectralConv2d(in_channels, out_channels, 
                                        modes1, modes2)
-    def forward(self, x, dim1, dim2):
-        #print(">>", x.shape)
-        h = self.block1(x, dim1, dim2)
+
+        self.mlp = nn.Sequential(
+            nn.SiLU(), 
+            nn.Linear(time_dim, out_channels * 2)
+        )
+        
+    def forward(self, x, time_emb, dim1, dim2):
+        
+        time_emb = self.mlp(time_emb)
+        time_emb = rearrange(time_emb, "b c -> b c 1 1")
+        scale_shift = time_emb.chunk(2, dim=1)
+        
+        h = self.block1(x, dim1, dim2, scale_shift=scale_shift)
         h = self.block2(h, dim1, dim2)
         return h + self.res_conv(x, dim1, dim2)
+
+class SinusoidalPositionEmbeddings(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, time):
+        device = time.device
+        half_dim = self.dim // 2
+        embeddings = math.log(10000) / (half_dim - 1)
+        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
+        embeddings = time[:, None] * embeddings[None, :]
+        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
+        return embeddings
         
 class UNO(nn.Module):
     def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
@@ -211,6 +243,8 @@ class UNO(nn.Module):
         #self.factor = factor
         self.padding = pad  # pad the domain if input is non-periodic
 
+        time_dim = d_co_domain*4
+
         self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
 
@@ -218,37 +252,42 @@ class UNO(nn.Module):
 
         # Currently assumes 128px input.
 
-        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, 24*2, 24*2)
-        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, 16*2,16*2)
-        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, 8*2, 8*2)
-        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, 4*2, 4*2)
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(d_co_domain),
+            nn.Linear(d_co_domain, time_dim),
+            nn.GELU(),
+            nn.Linear(time_dim, time_dim),
+        )
+
+        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, time_dim, 24*2, 24*2)
+        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, time_dim, 16*2,16*2)
+        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, time_dim, 8*2, 8*2)
+        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, time_dim, 4*2, 4*2)
         
-        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, 4*2,4*2)
+        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, time_dim, 4*2,4*2)
         # combine out channels of inv2_9 and block3
-        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, 8*2,8*2)
+        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, time_dim, 8*2,8*2)
         # combine out channels of inv3 and block2
-        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, 16*2,16*2)
+        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, time_dim, 16*2,16*2)
         # combine out channels of inv4 and block1
-        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, 24*2,24*2) # will be reshaped
-
-        #self.inv2_9 = Block(A[3]*self.d_co_domain, A[2]*self.d_co_domain, 4,4)
-        #self.inv3 = Block(A[3]*self.d_co_domain, A[1]*self.d_co_domain, 8,8)
-        #self.inv4 = Block(A[2]*self.d_co_domain, A[0]*self.d_co_domain, 16,16)
-        #self.inv5 = Block(A[1]*self.d_co_domain, self.d_co_domain, 24,24) # will be reshaped
-
+        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, time_dim, 24*2,24*2) # will be reshaped
 
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
 
-    def forward(self, x, sigmas):
+    def forward(self, x: torch.Tensor, t: torch.LongTensor):
         """
         Args:
           x: of shape (bs, res, res, 2)
-          sigma: of shape (1,1)
+          t: long tensor of shape (bs,)
 
-        Input is preprocessed so that x is transformed into the
+        `x` is preprocessed so that it is transformed into the
           shape (bs, res, res, 5), where 2 comes from the grid
           and 1 comes from the time embedding.
+
+        `t` is preprocessed into a time embedding vector and then
+          passed into each residual block to be transformed into
+          a scale and shift parameter.
         """
 
         # have a different time embedding per minibatch
@@ -259,6 +298,8 @@ class UNO(nn.Module):
         grid = self.get_grid(x.shape, x.device)
         # print('time_size',self.time(sigma).view(1,self.s, self.s,1).size())
         #time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
+
+        t_emb = self.time_mlp(t)
         
         x = torch.cat((x, grid), dim=-1)
 
@@ -271,23 +312,23 @@ class UNO(nn.Module):
 
         #print("x_Fc0: ", x_fc0.shape)
         
-        x_c0 = self.block1(x_fc0, int(D1*3/4), int(D2*3/4))
-        x_c1 = self.block2(x_c0, D1//2, D2//2)
-        x_c2 = self.block3(x_c1, D1//4, D2//4)
-        x_c2_1 = self.block4(x_c2, D1//8, D2//8)
+        x_c0 = self.block1(x_fc0, t_emb, int(D1*3/4), int(D2*3/4))
+        x_c1 = self.block2(x_c0, t_emb, D1//2, D2//2)
+        x_c2 = self.block3(x_c1, t_emb, D1//4, D2//4)
+        x_c2_1 = self.block4(x_c2, t_emb, D1//8, D2//8)
         
-        x_c2_9 = self.inv2_9(x_c2_1, D1//4, D2//4)
+        x_c2_9 = self.inv2_9(x_c2_1, t_emb, D1//4, D2//4)
         x_c2_9 = torch.cat((x_c2_9, x_c2), dim=1)
 
         #print("-----------")
 
-        x_c3 = self.inv3(x_c2_9, D1//2, D2//2)
+        x_c3 = self.inv3(x_c2_9, t_emb, D1//2, D2//2)
         x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        x_c4 = self.inv4(x_c3, int(D1*3/4), int(D2*3/4))
+        x_c4 = self.inv4(x_c3, t_emb, int(D1*3/4), int(D2*3/4))
         x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
-        x_c5 = self.inv5(x_c4, D1, D2)
+        x_c5 = self.inv5(x_c4, t_emb, D1, D2)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         if self.padding!=0:
             x_c5 = x_c5[..., :-self.padding, :-self.padding]
@@ -299,7 +340,7 @@ class UNO(nn.Module):
         
         x_out = self.fc2(x_fc1)
         
-        return x_out / sigmas.view(-1, 1, 1, 1)
+        return x_out
     
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]

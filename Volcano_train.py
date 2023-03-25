@@ -72,8 +72,11 @@ def parse_args():
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--npad", type=int, default=8)
-    parser.add_argument("--Ntest", type=int, default=1024)
-    parser.add_argument("--d_co_domain", type=float, default=32)
+    parser.add_argument("--Ntest", type=int, default=1024,
+                        help="Number of examples to generate for validation " + \
+                            "(generating skew and variance metrics)")
+    parser.add_argument("--d_co_domain", type=float, default=32,
+                        help="Is this analogous to `dim` for a regular U-Net?")
     parser.add_argument("--savedir", required=True, type=str)
     args = parser.parse_args()
     return args
@@ -214,21 +217,18 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
 
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
-    perm = torch.randperm(sigma.size(0))[0:bsize]
-    this_sigmas = sigma[perm].view(-1, 1)
+    idcs = torch.randperm(sigma.size(0))[0:bsize]
+    this_sigmas = sigma[idcs].view(-1, 1)
     # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
     # term1 = score_fn(x0+noise)
-    term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, this_sigmas)
+    term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, idcs.to(noise.device))
     term2 =  noise / this_sigmas.view(-1, 1, 1, 1)
     loss = ((term1+term2)**2).mean()
 
     return loss
 
-
-if __name__ == '__main__':
-
-    args = DotDict(vars(parse_args()))
+def run(args):
 
     savedir = args.savedir
     print("savedir: {}".format(savedir))
@@ -266,6 +266,14 @@ if __name__ == '__main__':
     fno = fno.to(device)
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
     print(optimizer)
+
+    # Load checkpoint here if it exists.
+    start_epoch = 0
+    if os.path.exists(os.path.join(savedir, "model.pt")):
+        chkpt = torch.load(os.path.join(savedir, "model.pt"))
+        fno.load_state_dict(chkpt['weights'])
+        start_epoch = chkpt['stats']['epoch']
+        print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
     # z_t ~ N(0,I), as per annealed SGLD algorithm
     noise_sampler = GaussianRF_idct(s, s,
@@ -315,6 +323,7 @@ if __name__ == '__main__':
             "decreasing. You probably need to switch these two arguments around.")
 
     sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
+    
     print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
         sigma[0],
         sigma[-1],
@@ -334,7 +343,7 @@ if __name__ == '__main__':
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     best_skew, best_var = np.inf, np.inf
-    for ep in range(args.epochs):
+    for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
         fno.train()
@@ -468,3 +477,8 @@ if __name__ == '__main__':
 
 
     #scipy.io.savemat('gm_trace/stats.mat', {'stats': stats})
+
+if __name__ == '__main__':
+
+    args = DotDict(vars(parse_args()))
+    run(args)
