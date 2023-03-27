@@ -275,11 +275,14 @@ class UNO(nn.Module):
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         self.fc2 = nn.Linear(4*self.d_co_domain, 2)
 
-    def forward(self, x: torch.Tensor, t: torch.LongTensor):
+    def forward(self, x: torch.FloatTensor, t: torch.LongTensor, sigmas: torch.FloatTensor):
         """
         Args:
-          x: of shape (bs, res, res, 2)
+          x: float tensor of shape (bs, res, res, 2)
           t: long tensor of shape (bs,)
+          sigmas: float tensor of shape (bs, 1, 1, 1)
+
+        Notes:
 
         `x` is preprocessed so that it is transformed into the
           shape (bs, res, res, 5), where 2 comes from the grid
@@ -288,6 +291,9 @@ class UNO(nn.Module):
         `t` is preprocessed into a time embedding vector and then
           passed into each residual block to be transformed into
           a scale and shift parameter.
+
+        `sigmas` is used to divide the output by the noise scale, as
+        per the suggestion in "Improved techniques for training SBGMs".
         """
 
         # have a different time embedding per minibatch
@@ -340,7 +346,7 @@ class UNO(nn.Module):
         
         x_out = self.fc2(x_fc1)
         
-        return x_out
+        return x_out / sigmas
     
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]

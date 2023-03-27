@@ -55,29 +55,38 @@ def parse_args():
     parser.add_argument("--val_size", type=float, default=0.1,
                         help="Size of the validation set (as a float in [0,1])")
     parser.add_argument("--record_interval", type=int, default=100)
-    parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
+    parser.add_argument("--savedir", required=True, type=str)
+    # Samplers and prior distribution
     parser.add_argument("--L", type=int, default=10,
                         help="Number of noise scales (timesteps)")
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
-    parser.add_argument("--sigma_x0", type=float, default=1.0,
-                        help="Variance of the prior distribution")
+    parser.add_argument("--epsilon", type=float, default=2e-5,
+                        help="Learning rate in the SGLD sampling algorithm")
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Larger tau gives rougher (noisier) noise")
     parser.add_argument("--alpha", type=float, default=1.5,
                         help="TODO")
-    parser.add_argument("--factor", type=float, default=3/4,
-                        help="Width multiplier for U-Net")
+    parser.add_argument("--sigma_x0", type=float, default=1.0,
+                        help="Variance of the prior distribution")
     parser.add_argument("--T", type=int, default=100,
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
-    parser.add_argument("--lr", type=float, default=1e-3)
+    # U-Net specific
+    parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
+    parser.add_argument("--factor", type=float, default=3/4,
+                        help="NO LONGER USED")
+    parser.add_argument("--d_co_domain", type=float, default=32,
+                        help="Is this analogous to `dim` for a regular U-Net?")
     parser.add_argument("--npad", type=int, default=8)
+    # Optimisation
+    parser.add_argument("--lr", type=float, default=1e-3)
+    # Evaluation
     parser.add_argument("--Ntest", type=int, default=1024,
                         help="Number of examples to generate for validation " + \
                             "(generating skew and variance metrics)")
-    parser.add_argument("--d_co_domain", type=float, default=32,
-                        help="Is this analogous to `dim` for a regular U-Net?")
-    parser.add_argument("--savedir", required=True, type=str)
+    # Misc
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="Number of workers for data loader")
     args = parser.parse_args()
     return args
 
@@ -126,7 +135,8 @@ class VolcanoDataset(Dataset):
                                                  self.x_train.max())
 
 @torch.no_grad()
-def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T, 
+def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
+           epsilon=2e-5, 
            fns=None):
 
     buf = []
@@ -140,7 +150,7 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     for _ in range(n_batches):
         u = init_sampler.sample(bs)
         res = u.size(1)
-        u = sample_trace(fno, noise_sampler, sigma, u, epsilon=2e-5, T=T) # (bs, res, res, 2)
+        u = sample_trace(fno, noise_sampler, sigma, u, epsilon=epsilon, T=T) # (bs, res, res, 2)
         u = u.view(bs,-1) # (bs, res*res*2)
         u = u[~torch.any(u.isnan(),dim=1)]
         #try:
@@ -155,8 +165,10 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     # Flatten each list in fn outputs
     if fns is not None:
         fn_outputs = {k:torch.cat(v, dim=0)[0:n_examples] for k,v in fn_outputs.items()}
-    
-    assert len(buf) == n_examples
+    if len(buf) != n_examples:
+        print("WARNING: some NaNs were in the generated samples, there were only " + \
+            "{} / {} valid samples generated".format(len(buf), n_examples))
+    #assert len(buf) == n_examples
     return buf, fn_outputs
 
 def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
@@ -165,22 +177,26 @@ def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
         os.makedirs(basedir)
     samples = samples.cpu().numpy()
     numb_fig = samples.shape[0]
-    fig, ax = plt.subplots(1, numb_fig, figsize=figsize)
+    fig, ax = plt.subplots(1, numb_fig, figsize=figsize, squeeze=False)
     for i in range(numb_fig):
-        bar = ax[i].imshow(samples[i,:,:,0], extent=[0,1,0,1])
-    cax = fig.add_axes([ax[numb_fig-1].get_position().x1+0.01,
-                        ax[numb_fig-1].get_position().y0,0.02,
-                        ax[numb_fig-1].get_position().height])
+        bar = ax[0][i].imshow(samples[i,:,:,0], extent=[0,1,0,1])
+    cax = fig.add_axes([ax[0][numb_fig-1].get_position().x1+0.01,
+                        ax[0][numb_fig-1].get_position().y0,0.02,
+                        ax[0][numb_fig-1].get_position().height])
     plt.colorbar(bar, cax=cax)
     plt.savefig(outfile, bbox_inches='tight')
 
-def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, figsize=(16,4)):
+def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
+                 subtitles=None,
+                 figsize=(16,4)):
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
         os.makedirs(basedir)
-    num_fig = samples.size(0)
-    fig, ax = plt.subplots(1, num_fig, figsize=figsize)
-    for j in range(num_fig):
+    ncol = samples.size(0)
+    if subtitles is not None:
+        assert len(subtitles) == ncol
+    fig, ax = plt.subplots(1, ncol, figsize=figsize)
+    for j in range(ncol):
         phase = torch.atan2(samples[j,:,:,1], 
                             samples[j,:,:,0]).cpu().detach().numpy()
         phase = (phase + np.pi) % (2 * np.pi) - np.pi
@@ -188,14 +204,44 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, figsize
                            cmap='RdYlBu', 
                            vmin = -np.pi, 
                            vmax=np.pi,extent=[0,1,0,1])
+        if subtitles is not None:
+            ax[j].set_title(subtitles[j])
     cax = fig.add_axes(
-        [ax[num_fig-1].get_position().x1+0.01,
-         ax[num_fig-1].get_position().y0,0.02,
-         ax[num_fig-1].get_position().height]
+        [ax[ncol-1].get_position().x1+0.01,
+         ax[ncol-1].get_position().y0,0.02,
+         ax[ncol-1].get_position().height]
     )
     if title is not None:
         fig.suptitle(title)
     plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
+    plt.savefig(outfile, bbox_inches='tight')
+
+def plot_noised_samples(samples: torch.Tensor, 
+                        outfile: str, 
+                        title: str = None,
+                        subtitles=None,
+                        figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    nrow = ncol = int(np.sqrt(samples.size(0)))
+    if subtitles is not None:
+        assert len(subtitles) == ncol*nrow
+    fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
+    for i in range(nrow):
+        for j in range(ncol):
+            phase = torch.atan2(samples[i*nrow + j,:,:,1], 
+                                samples[i*nrow + j,:,:,0]).cpu().detach().numpy()
+            phase = (phase + np.pi) % (2 * np.pi) - np.pi
+            bar = ax[i][j].imshow(phase,  
+                            cmap='RdYlBu', 
+                            vmin = -np.pi, 
+                            vmax=np.pi,extent=[0,1,0,1])
+            if subtitles is not None:
+                ax[i][j].set_title(subtitles[i*nrow + j])
+    if title is not None:
+        fig.suptitle(title)
+    fig.tight_layout()
     plt.savefig(outfile, bbox_inches='tight')
 
 
@@ -217,15 +263,15 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
 
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
-    idcs = torch.randperm(sigma.size(0))[0:bsize]
-    this_sigmas = sigma[idcs].view(-1, 1)
+    idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
+    this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
     # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
-    noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(bsize)
+    noise = this_sigmas * noise_sampler.sample(bsize)
     # term1 = score_fn(x0+noise)
-    term1 =  this_sigmas.view(-1, 1, 1, 1) * fno(u + noise, idcs.to(noise.device))
-    term2 =  noise / this_sigmas.view(-1, 1, 1, 1)
+    u_noised = u + noise
+    term1 =  this_sigmas * fno(u_noised, idcs, this_sigmas)
+    term2 =  noise / this_sigmas
     loss = ((term1+term2)**2).mean()
-
     return loss
 
 def run(args):
@@ -253,8 +299,10 @@ def run(args):
     print("Len of train / valid: {} / {}".format(len(train_dataset),
                                                  len(valid_dataset)))
           
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
+                              shuffle=True, num_workers=args.num_workers)
+    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, 
+                              shuffle=True, num_workers=args.num_workers)
 
     s = 128 - 8
     h = 2*math.pi/s
@@ -278,7 +326,7 @@ def run(args):
     # z_t ~ N(0,I), as per annealed SGLD algorithm
     noise_sampler = GaussianRF_idct(s, s,
                                     alpha=args.alpha, 
-                                    tau=args.tau, 
+                                    tau=args.tau,
                                     sigma = 1.0, 
                                     device=device)
     init_sampler = GaussianRF_idct(s, s, 
@@ -354,7 +402,7 @@ def run(args):
 
             u = u.to(device)
 
-            loss = score_matching_loss(fno, u, sigma, noise_sampler)
+            loss, score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
             optimizer.step()
@@ -372,6 +420,29 @@ def run(args):
 
             #if iter_ == 10: # TODO add debug flag
             #    break
+
+            if iter_ == 0 and ep == 0:
+                with torch.no_grad():
+                    idcs = torch.linspace(0, len(sigma)-1, 16).long().to(u.device)
+                    this_sigmas = sigma[idcs]
+                    noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
+                    print("noise magnitudes: min={}, max={}".format(noise.min(),
+                                                                    noise.max()))
+                    plot_noised_samples(
+                        # Use the same example, and make a 4x4 grid of points
+                        u[0:1].repeat(16, 1, 1, 1) + noise, 
+                        outfile=os.path.join(savedir, "u_noised.png"), 
+                        subtitles=[ "u + {:.3f}*z".format(x) for x in \
+                            this_sigmas.cpu().numpy() ],
+                        figsize=(8,8)
+                    )
+                    
+                    plot_noised_samples(
+                        # Use the same example, and make a 4x4 grid of points
+                        init_sampler.sample(16),
+                        outfile=os.path.join(savedir, "u_prior.png"), 
+                        figsize=(8,8)
+                    )
 
         pbar.close()     
 
@@ -392,6 +463,7 @@ def run(args):
             u, fn_outs = sample(
                 fno, init_sampler, noise_sampler, sigma, 
                 bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
+                epsilon=args.epsilon,
                 fns={"skew": circular_skew, "var": circular_var}
             )
             skew_generated = fn_outs['skew']
