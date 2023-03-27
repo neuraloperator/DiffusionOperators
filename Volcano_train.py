@@ -402,7 +402,7 @@ def run(args):
 
             u = u.to(device)
 
-            loss, score_matching_loss(fno, u, sigma, noise_sampler)
+            loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
             optimizer.step()
