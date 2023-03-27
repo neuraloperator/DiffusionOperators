@@ -13,7 +13,7 @@ from scipy.stats import wasserstein_distance as w_distance
 from timeit import default_timer
 
 from utils import sigma_sequence, avg_spectrum, sample_trace, DotDict, circular_skew, circular_var
-from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct
+from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct, IndependentGaussian
 # from models import FNO2d, UNO
 from models import UNO
 
@@ -324,14 +324,14 @@ def run(args):
         print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
     # z_t ~ N(0,I), as per annealed SGLD algorithm
-    noise_sampler = GaussianRF_idct(s, s,
-                                    alpha=args.alpha, 
-                                    tau=args.tau,
+    noise_sampler = IndependentGaussian(s, s,
+                                    #alpha=args.alpha, 
+                                    #tau=args.tau,
                                     sigma = 1.0, 
                                     device=device)
-    init_sampler = GaussianRF_idct(s, s, 
-                                   alpha=args.alpha, 
-                                   tau=args.tau, 
+    init_sampler = IndependentGaussian(s, s, 
+                                   #alpha=args.alpha, 
+                                   #tau=args.tau, 
                                    sigma = args.sigma_x0,
                                    device=device)
 
@@ -402,7 +402,7 @@ def run(args):
 
             u = u.to(device)
 
-            loss, score_matching_loss(fno, u, sigma, noise_sampler)
+            loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
             optimizer.step()

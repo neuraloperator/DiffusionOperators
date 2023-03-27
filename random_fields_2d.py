@@ -103,3 +103,19 @@ class GaussianRF_idct(object):
         L[:,:,0] = cv2.idct(L[:,:,0])
         L[:,:,1] = cv2.idct(L[:,:,1])
         return L
+
+class IndependentGaussian(object):
+    """
+
+    """
+
+    def __init__(self, Ln1, Ln2, sigma=1, device=None):
+        self.Ln1 = Ln1
+        self.Ln2 = Ln2
+        self.device = device
+        self.sigma = sigma
+
+    def sample(self, N):
+        z = torch.randn((N, self.Ln1, self.Ln2, 2)).normal_(0, self.sigma)
+        z = z.to(self.device)
+        return z
