@@ -245,7 +245,9 @@ class UNO(nn.Module):
 
         time_dim = d_co_domain*4
 
-        self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
+        self.init_conv = nn.Conv2d(in_d_co_domain, d_co_domain, 1, padding=0)
+
+        #self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
 
         A = mult_dims
@@ -253,8 +255,8 @@ class UNO(nn.Module):
         # Currently assumes 128px input.
 
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(d_co_domain),
-            nn.Linear(d_co_domain, time_dim),
+            SinusoidalPositionEmbeddings(time_dim),
+            nn.Linear(time_dim, time_dim),
             nn.GELU(),
             nn.Linear(time_dim, time_dim),
         )
@@ -272,8 +274,13 @@ class UNO(nn.Module):
         # combine out channels of inv4 and block1
         self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, time_dim, 24*2,24*2) # will be reshaped
 
-        self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
-        self.fc2 = nn.Linear(4*self.d_co_domain, 2)
+        self.post = ResnetBlock(self.d_co_domain*2, self.d_co_domain,
+                                time_dim,
+                                24*2, 24*2)
+        self.final_conv = nn.Conv2d(self.d_co_domain, 2, 1, padding=0)
+        
+        #self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
+        #self.fc2 = nn.Linear(4*self.d_co_domain, 2)
 
     def forward(self, x: torch.FloatTensor, t: torch.LongTensor, sigmas: torch.FloatTensor):
         """
@@ -306,12 +313,14 @@ class UNO(nn.Module):
         #time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
 
         t_emb = self.time_mlp(t)
-        
+
         x = torch.cat((x, grid), dim=-1)
 
-        x_fc0 = self.fc0(x)
-        x_fc0 = F.gelu(x_fc0)
-        x_fc0 = x_fc0.permute(0, 3, 1, 2)
+        x_fc0 = x.permute(0, 3, 1, 2)
+        x_fc0 = self.init_conv(x_fc0)
+
+        #x_fc0 = self.fc0(x)
+        #x_fc0 = F.gelu(x_fc0)
         x_fc0 = F.pad(x_fc0, [0,self.padding, 0,self.padding])
         
         D1,D2 = x_fc0.shape[-2],x_fc0.shape[-1]
@@ -336,15 +345,15 @@ class UNO(nn.Module):
 
         x_c5 = self.inv5(x_c4, t_emb, D1, D2)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
-        if self.padding!=0:
-            x_c5 = x_c5[..., :-self.padding, :-self.padding]
+        
+        x_c6 = self.post(x_c5, t_emb, D1, D2)
 
-        x_c5 = x_c5.permute(0, 2, 3, 1)
-        
-        x_fc1 = self.fc1(x_c5)
-        x_fc1 = F.gelu(x_fc1)
-        
-        x_out = self.fc2(x_fc1)
+        if self.padding!=0:
+            x_c6 = x_c6[..., :-self.padding, :-self.padding]
+
+        x_c6 = self.final_conv(x_c6)
+
+        x_out = x_c6.permute(0, 2, 3, 1)        
         
         return x_out / sigmas
     

@@ -73,9 +73,7 @@ def parse_args():
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     # U-Net specific
     parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
-    parser.add_argument("--factor", type=float, default=3/4,
-                        help="NO LONGER USED")
-    parser.add_argument("--d_co_domain", type=float, default=32,
+    parser.add_argument("--d_co_domain", type=int, default=32,
                         help="Is this analogous to `dim` for a regular U-Net?")
     parser.add_argument("--npad", type=int, default=8)
     # Optimisation
