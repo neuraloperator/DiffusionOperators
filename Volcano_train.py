@@ -59,6 +59,8 @@ def parse_args():
     # Samplers and prior distribution
     parser.add_argument("--L", type=int, default=10,
                         help="Number of noise scales (timesteps)")
+    parser.add_argument("--schedule", type=str, default="geometric",
+                        choices=["geometric", "linear"])
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
     parser.add_argument("--epsilon", type=float, default=2e-5,
@@ -66,7 +68,7 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Larger tau gives rougher (noisier) noise")
     parser.add_argument("--alpha", type=float, default=1.5,
-                        help="TODO")
+                        help="Larger alpha gives smoother noise")
     parser.add_argument("--sigma_x0", type=float, default=1.0,
                         help="Variance of the prior distribution")
     parser.add_argument("--T", type=int, default=100,
@@ -323,14 +325,14 @@ def run(args):
         print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
     # z_t ~ N(0,I), as per annealed SGLD algorithm
-    noise_sampler = IndependentGaussian(s, s,
-                                    #alpha=args.alpha, 
-                                    #tau=args.tau,
+    noise_sampler = GaussianRF_idct(s, s,
+                                    alpha=args.alpha, 
+                                    tau=args.tau,
                                     sigma = 1.0, 
                                     device=device)
-    init_sampler = IndependentGaussian(s, s, 
-                                   #alpha=args.alpha, 
-                                   #tau=args.tau, 
+    init_sampler = GaussianRF_idct(s, s, 
+                                   alpha=args.alpha, 
+                                   tau=args.tau, 
                                    sigma = args.sigma_x0,
                                    device=device)
 
@@ -369,7 +371,12 @@ def run(args):
         raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
             "decreasing. You probably need to switch these two arguments around.")
 
-    sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
+    if args.schedule == 'geometric':
+        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
+    elif args.schedule == 'linear':
+        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
+    else:
+        raise ValueError("Unknown schedule: {}".format(args.schedule))
     
     print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
         sigma[0],
