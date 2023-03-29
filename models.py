@@ -221,7 +221,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         return embeddings
         
 class UNO(nn.Module):
-    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
+    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, fd = 1, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
         super(UNO, self).__init__()
 
         """
@@ -261,22 +261,22 @@ class UNO(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, time_dim, 24*2, 24*2)
-        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, time_dim, 16*2,16*2)
-        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, time_dim, 8*2, 8*2)
-        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, time_dim, 4*2, 4*2)
+        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, time_dim, 24//fd, 24//fd)
+        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, time_dim, 16//fd, 16//fd)
+        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, time_dim, 8//fd, 8//fd)
+        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, time_dim, 4//fd, 4//fd)
         
-        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, time_dim, 4*2,4*2)
+        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, time_dim, 4//fd, 4//fd)
         # combine out channels of inv2_9 and block3
-        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, time_dim, 8*2,8*2)
+        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, time_dim, 8//fd,8//fd)
         # combine out channels of inv3 and block2
-        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, time_dim, 16*2,16*2)
+        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, time_dim, 16//fd,16//fd)
         # combine out channels of inv4 and block1
-        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, time_dim, 24*2,24*2) # will be reshaped
+        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, time_dim, 24//fd,24//fd) # will be reshaped
 
         self.post = ResnetBlock(self.d_co_domain*2, self.d_co_domain,
                                 time_dim,
-                                24*2, 24*2)
+                                24//fd, 24//fd)
         self.final_conv = nn.Conv2d(self.d_co_domain, 2, 1, padding=0)
         
         #self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)

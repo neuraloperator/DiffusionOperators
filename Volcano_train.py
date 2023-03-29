@@ -73,6 +73,7 @@ def parse_args():
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     # U-Net specific
     parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
+    parser.add_argument("--fd", type=int, default=1)
     parser.add_argument("--d_co_domain", type=int, default=32,
                         help="Is this analogous to `dim` for a regular U-Net?")
     parser.add_argument("--npad", type=int, default=8)
@@ -306,7 +307,7 @@ def run(args):
     h = 2*math.pi/s
 
     # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
-    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, mult_dims=args.mult_dims).to(device)
+    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, fd=args.fd, mult_dims=args.mult_dims).to(device)
     print(fno)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
