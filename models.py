@@ -96,7 +96,7 @@ class FNO2d(nn.Module):
 
 
 class SpectralConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, modes1 = None, modes2 = None):
+    def __init__(self, in_channels, out_channels, dim1, dim2, modes1 = None, modes2 = None, fmult=None):
         super(SpectralConv2d, self).__init__()
 
         """
@@ -106,12 +106,19 @@ class SpectralConv2d(nn.Module):
         out_channels = int(out_channels)
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.dim1 = dim1
+        self.dim2 = dim2
         if modes1 is not None:
             self.modes1 = modes1 #Number of Fourier modes to multiply, at most floor(N/2) + 1
             self.modes2 = modes2
         else:
             self.modes1 = dim1//2-1 #if not given take the highest number of modes can be taken
             self.modes2 = dim2//2 
+        if fmult is not None:
+            self.modes1 = int(self.modes1 * fmult)
+            self.modes2 = int(self.modes2 * fmult)
+        self.fmult = fmult
+        
         self.scale = (1 / (2*in_channels))**(1.0/2.0)
         self.weights1 = nn.Parameter(self.scale * (torch.randn(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat)))
         self.weights2 = nn.Parameter(self.scale * (torch.randn(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat)))
@@ -121,7 +128,13 @@ class SpectralConv2d(nn.Module):
         # (batch, in_channel, x,y ), (in_channel, out_channel, x,y) -> (batch, out_channel, x,y)
         return torch.einsum("bixy,ioxy->boxy", input, weights)
 
-    def forward(self, x, dim1, dim2):
+    def forward(self, x):
+        dim1, dim2 = self.dim1, self.dim2
+        #if x.size(-2) != dim1 or x.size(-1) != dim2:
+        #    raise ValueError(("x is expected to be of spatial dimension ({},{}) " + \
+        #        "but dimension of x given is ({},{}) instead").format(
+        #            dim1, dim2, x.size(-2), x.size(-1)))
+        
         batchsize = x.shape[0]
         #Compute Fourier coeffcients up to factor of e^(- something constant)
         x_ft = torch.fft.rfft2(x)
@@ -140,37 +153,35 @@ class SpectralConv2d(nn.Module):
         return x
 
     def extra_repr(self):
-        return "in_channels={}, out_channels={}, modes1={}, modes2={}".format(
-            self.in_channels, self.out_channels, self.modes1, self.modes2
+        return "in_channels={}, out_channels={}, modes1={}, modes2={}, fmult={}".format(
+            self.in_channels, self.out_channels, self.modes1, self.modes2, self.fmult
         )
 
 
 class pointwise_op(nn.Module):
-    def __init__(self, in_channel, out_channel):
+    def __init__(self, in_channel, out_channel, dim1, dim2):
         super(pointwise_op,self).__init__()
         self.conv = nn.Conv2d(int(in_channel), int(out_channel), 1)
+        self.dim1 = dim1
+        self.dim2 = dim2
 
-    def forward(self,x, dim1, dim2):
+    def forward(self, x):
+        dim1, dim2 = self.dim1, self.dim2
         x_out = self.conv(x)
         x_out = torch.nn.functional.interpolate(x_out, size = (dim1, dim2),mode = 'bicubic',align_corners=True)
         return x_out
 
 class Block(nn.Module):
-    def __init__(self, in_channels, out_channels, modes1, modes2, groups=8):
+    def __init__(self, in_channels, out_channels, dim1, dim2, fmult, groups=8):
         super().__init__()
-        self.conv0 = SpectralConv2d(in_channels, out_channels, modes1, modes2)
-        self.w0 = pointwise_op(in_channels, out_channels) 
+        self.conv0 = SpectralConv2d(in_channels, out_channels, dim1, dim2, fmult=fmult)
+        self.w0 = pointwise_op(in_channels, out_channels, dim1, dim2) 
         self.norm = nn.GroupNorm(groups, out_channels)
-        self.modes1 = modes1
-        self.modes2 = modes2
-    def forward(self, x, dim1, dim2, scale_shift=None):
-        # spectral convolution
-        #print(x.shape, dim1, dim2, self.modes1, self.modes2, self.conv0)
-        #try:
-        x1_c0 = self.conv0(x, dim1, dim2)
-        #except:
-        #    import pdb; pdb.set_trace()
-        x2_c0 = self.w0(x, dim1, dim2)
+        self.dim1 = dim1
+        self.dim2 = dim2
+    def forward(self, x, scale_shift=None):
+        x1_c0 = self.conv0(x)
+        x2_c0 = self.w0(x)
         x_c0 = x1_c0 + x2_c0
         # then apply norm
         x_c0 = self.norm(x_c0)
@@ -182,29 +193,34 @@ class Block(nn.Module):
         return F.gelu(x_c0)
 
 class ResnetBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_dim, modes1, modes2, groups=8):
+    def __init__(self, in_channels, out_channels, time_dim, dim1, dim2, fmult, groups=8):
         super().__init__()
         self.block1 = Block(in_channels, out_channels, 
-                            modes1, modes2, groups=groups)
+                            dim1, dim2,
+                            fmult=fmult,
+                            groups=groups)
         self.block2 = Block(out_channels, out_channels, 
-                            modes1, modes2, groups=groups) 
-        self.res_conv = SpectralConv2d(in_channels, out_channels, 
-                                       modes1, modes2)
+                            dim1, dim2,
+                            fmult=fmult,
+                            groups=groups) 
+        self.res_conv = SpectralConv2d(in_channels, out_channels,
+                                       dim1, dim2,
+                                       fmult=fmult)
 
         self.mlp = nn.Sequential(
             nn.SiLU(), 
             nn.Linear(time_dim, out_channels * 2)
         )
         
-    def forward(self, x, time_emb, dim1, dim2):
+    def forward(self, x, time_emb):
         
         time_emb = self.mlp(time_emb)
         time_emb = rearrange(time_emb, "b c -> b c 1 1")
         scale_shift = time_emb.chunk(2, dim=1)
         
-        h = self.block1(x, dim1, dim2, scale_shift=scale_shift)
-        h = self.block2(h, dim1, dim2)
-        return h + self.res_conv(x, dim1, dim2)
+        h = self.block1(x, scale_shift=scale_shift)
+        h = self.block2(h)
+        return h + self.res_conv(x)
 
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
@@ -221,7 +237,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         return embeddings
         
 class UNO(nn.Module):
-    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, fd = 1, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
+    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, fmult=1.0, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
         super(UNO, self).__init__()
 
         """
@@ -249,10 +265,10 @@ class UNO(nn.Module):
 
         #self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
-
         A = mult_dims
 
         # Currently assumes 128px input.
+        sdim = s + pad
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_dim),
@@ -261,22 +277,82 @@ class UNO(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        self.block1 = ResnetBlock(self.d_co_domain, A[0]*self.d_co_domain, time_dim, 24//fd, 24//fd)
-        self.block2 = ResnetBlock(A[0]*self.d_co_domain, A[1]*self.d_co_domain, time_dim, 16//fd, 16//fd)
-        self.block3 = ResnetBlock(A[1]*self.d_co_domain, A[2]*self.d_co_domain, time_dim, 8//fd, 8//fd)
-        self.block4 = ResnetBlock(A[2]*self.d_co_domain, A[3]*self.d_co_domain, time_dim, 4//fd, 4//fd)
+        self.block1 = ResnetBlock(
+            self.d_co_domain, A[0]*self.d_co_domain, 
+            time_dim, 
+            sdim, sdim,
+            fmult
+            #int(sdim*0.75*fmult), int(sdim*0.75*fmult)
+        )
+        self.block2 = ResnetBlock(
+            A[0]*self.d_co_domain, A[1]*self.d_co_domain, 
+            time_dim, 
+            int(sdim*0.75), int(sdim*0.75),
+            fmult,
+            #int(sdim/2*fmult), int(sdim/2*fmult)
+        )
+                                  
+        self.block3 = ResnetBlock(
+            A[1]*self.d_co_domain, A[2]*self.d_co_domain, 
+            time_dim, 
+            sdim//2, sdim//2,
+            fmult,
+            #int(sdim/4*fmult), int(sdim/4*fmult)
+        )
+                                  
+        self.block4 = ResnetBlock(
+            A[2]*self.d_co_domain, A[3]*self.d_co_domain, 
+            time_dim,
+            sdim//4, sdim//4,
+            fmult,
+            #int(sdim/8*fmult), int(sdim/8*fmult)
+        )
+                                  
         
-        self.inv2_9 = ResnetBlock(A[3] * self.d_co_domain, A[2]*self.d_co_domain, time_dim, 4//fd, 4//fd)
+        self.inv2_9 = ResnetBlock(
+            A[3] * self.d_co_domain, 
+            A[2]*self.d_co_domain, 
+            time_dim, 
+            sdim//2, sdim//2,
+            fmult,
+            #int(sdim/4*fmult), int(sdim/4*fmult)
+        )
         # combine out channels of inv2_9 and block3
-        self.inv3 = ResnetBlock( (A[2]*2) * self.d_co_domain, A[1]*self.d_co_domain, time_dim, 8//fd,8//fd)
+        self.inv3 = ResnetBlock(
+            (A[2]*2) * self.d_co_domain, 
+            A[1]*self.d_co_domain, 
+            time_dim, 
+            int(sdim*0.75), int(sdim*0.75),
+            fmult,
+            #int(sdim/2*fmult), int(sdim/2*fmult)
+        )
         # combine out channels of inv3 and block2
-        self.inv4 = ResnetBlock( (A[1]*2) * self.d_co_domain, A[0]*self.d_co_domain, time_dim, 16//fd,16//fd)
+        self.inv4 = ResnetBlock(
+            (A[1]*2) * self.d_co_domain, 
+            A[0]*self.d_co_domain, 
+            time_dim, 
+            sdim, sdim,
+            fmult,
+            #int(sdim*0.75*fmult), int(sdim*0.75*fmult)
+        )
+        
         # combine out channels of inv4 and block1
-        self.inv5 = ResnetBlock( (A[0]*2) * self.d_co_domain, self.d_co_domain, time_dim, 24//fd,24//fd) # will be reshaped
+        self.inv5 = ResnetBlock(
+            (A[0]*2) * self.d_co_domain, 
+            self.d_co_domain, 
+            time_dim,
+            sdim, sdim,
+            fmult,
+            #int(sdim*fmult), int(sdim*fmult)
+        )
 
-        self.post = ResnetBlock(self.d_co_domain*2, self.d_co_domain,
-                                time_dim,
-                                24//fd, 24//fd)
+        self.post = ResnetBlock(
+            self.d_co_domain*2, 
+            self.d_co_domain,
+            time_dim,
+            sdim, sdim,
+            fmult
+        )
         self.final_conv = nn.Conv2d(self.d_co_domain, 2, 1, padding=0)
         
         #self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
@@ -323,30 +399,26 @@ class UNO(nn.Module):
         #x_fc0 = F.gelu(x_fc0)
         x_fc0 = F.pad(x_fc0, [0,self.padding, 0,self.padding])
         
-        D1,D2 = x_fc0.shape[-2],x_fc0.shape[-1]
-
-        #print("x_Fc0: ", x_fc0.shape)
+        x_c0 = self.block1(x_fc0, t_emb)
+        x_c1 = self.block2(x_c0, t_emb)
+        x_c2 = self.block3(x_c1, t_emb)
+        x_c2_1 = self.block4(x_c2, t_emb)
         
-        x_c0 = self.block1(x_fc0, t_emb, int(D1*3/4), int(D2*3/4))
-        x_c1 = self.block2(x_c0, t_emb, D1//2, D2//2)
-        x_c2 = self.block3(x_c1, t_emb, D1//4, D2//4)
-        x_c2_1 = self.block4(x_c2, t_emb, D1//8, D2//8)
-        
-        x_c2_9 = self.inv2_9(x_c2_1, t_emb, D1//4, D2//4)
+        x_c2_9 = self.inv2_9(x_c2_1, t_emb)
         x_c2_9 = torch.cat((x_c2_9, x_c2), dim=1)
 
         #print("-----------")
 
-        x_c3 = self.inv3(x_c2_9, t_emb, D1//2, D2//2)
+        x_c3 = self.inv3(x_c2_9, t_emb)
         x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        x_c4 = self.inv4(x_c3, t_emb, int(D1*3/4), int(D2*3/4))
+        x_c4 = self.inv4(x_c3, t_emb)
         x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
-        x_c5 = self.inv5(x_c4, t_emb, D1, D2)
+        x_c5 = self.inv5(x_c4, t_emb)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         
-        x_c6 = self.post(x_c5, t_emb, D1, D2)
+        x_c6 = self.post(x_c5, t_emb)
 
         if self.padding!=0:
             x_c6 = x_c6[..., :-self.padding, :-self.padding]
