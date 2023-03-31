@@ -101,6 +101,21 @@ class SpectralConv2d(nn.Module):
 
         """
         2D Fourier layer. It does FFT, linear transform, and Inverse FFT.    
+
+        Args:
+          in_channels: input channels
+          out_channels: output channels
+          dim1: the target dimension of the resulting convolution. The input will
+            be downsized so that the first spatial dimension is of size `dim1`.
+          dim2: the target dimension of the resulting convolution. The input will
+            be downsized so that the first spatial dimension is of size `dim2`.            
+          modes1: the number of Fourier modes for dim1. If set to `None` then
+            we will use dim1//2-1. If `fmult` is set, this number will be scaled
+            by that.
+          modes2: the number of Fourier modes for dim2. If set to `None` then
+            we will use dim2//2. If `fmult` is set, this number will be scaled
+            by that.
+          fmult: multiplier for number of Fourier modes to use per spatial dim.
         """
         in_channels = int(in_channels)
         out_channels = int(out_channels)
@@ -139,10 +154,11 @@ class SpectralConv2d(nn.Module):
         #Compute Fourier coeffcients up to factor of e^(- something constant)
         x_ft = torch.fft.rfft2(x)
 
-        #print(x.shape, self.modes1, self.modes2)
+        #print(x.shape, self.dim1, self.dim2, self.modes1, self.modes2)
 
         # Multiply relevant Fourier modes
         out_ft = torch.zeros(batchsize, self.out_channels,  dim1, dim2//2 + 1 , dtype=torch.cfloat, device=x.device)
+        #print( x_ft[:, :, :self.modes1, :self.modes2].shape, self.weights1.shape )
         out_ft[:, :, :self.modes1, :self.modes2] = \
             self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1)
         out_ft[:, :, -self.modes1:, :self.modes2] = \
@@ -199,13 +215,13 @@ class ResnetBlock(nn.Module):
                             dim1, dim2,
                             fmult=fmult,
                             groups=groups)
-        self.block2 = Block(out_channels, out_channels, 
-                            dim1, dim2,
-                            fmult=fmult,
-                            groups=groups) 
-        self.res_conv = SpectralConv2d(in_channels, out_channels,
-                                       dim1, dim2,
-                                       fmult=fmult)
+        #self.block2 = Block(out_channels, out_channels, 
+        #                    dim1, dim2,
+        #                    fmult=fmult,
+        #                    groups=groups) 
+        #self.res_conv = SpectralConv2d(in_channels, out_channels,
+        #                               dim1, dim2,
+        #                               fmult=fmult)
 
         self.mlp = nn.Sequential(
             nn.SiLU(), 
@@ -219,8 +235,8 @@ class ResnetBlock(nn.Module):
         scale_shift = time_emb.chunk(2, dim=1)
         
         h = self.block1(x, scale_shift=scale_shift)
-        h = self.block2(h)
-        return h + self.res_conv(x)
+        #h = self.block2(h)
+        return h #+ self.res_conv(x)
 
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
@@ -346,14 +362,16 @@ class UNO(nn.Module):
             #int(sdim*fmult), int(sdim*fmult)
         )
 
-        self.post = ResnetBlock(
-            self.d_co_domain*2, 
-            self.d_co_domain,
-            time_dim,
-            sdim, sdim,
-            fmult
-        )
-        self.final_conv = nn.Conv2d(self.d_co_domain, 2, 1, padding=0)
+        #self.post = nn.Identity()
+
+        #self.post = ResnetBlock(
+        #    self.d_co_domain*2, 
+        #    self.d_co_domain,
+        #    time_dim,
+        #    sdim, sdim,
+        #    fmult
+        #)
+        self.final_conv = nn.Conv2d(self.d_co_domain*2, 2, 1, padding=0)
         
         #self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
         #self.fc2 = nn.Linear(4*self.d_co_domain, 2)
@@ -418,7 +436,8 @@ class UNO(nn.Module):
         x_c5 = self.inv5(x_c4, t_emb)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         
-        x_c6 = self.post(x_c5, t_emb)
+        #x_c6 = self.post(x_c5, t_emb)
+        x_c6 = x_c5
 
         if self.padding!=0:
             x_c6 = x_c6[..., :-self.padding, :-self.padding]
