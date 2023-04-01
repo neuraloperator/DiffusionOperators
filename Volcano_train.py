@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset, Dataset, Subset
 from torchvision.utils import save_image
+from torchvision import transforms
 import random
 import math
 import os 
@@ -61,6 +62,10 @@ def parse_args():
                         help="Number of noise scales (timesteps)")
     parser.add_argument("--schedule", type=str, default="geometric",
                         choices=["geometric", "linear"])
+    parser.add_argument("--white_noise", action='store_true',
+                        help="If set, use independent Gaussian noise instead")
+    parser.add_argument("--augment", action='store_true',
+                        help="If set, use data augmentation")
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
     parser.add_argument("--epsilon", type=float, default=2e-5,
@@ -88,7 +93,7 @@ def parse_args():
                         help="Number of examples to generate for validation " + \
                             "(generating skew and variance metrics)")
     # Misc
-    parser.add_argument("--num_workers", type=int, default=1,
+    parser.add_argument("--num_workers", type=int, default=2,
                         help="Number of workers for data loader")
     args = parser.parse_args()
     return args
@@ -97,7 +102,7 @@ def parse_args():
 
 class VolcanoDataset(Dataset):
 
-    def __init__(self, root, ntrain=4096):
+    def __init__(self, root, ntrain=4096, transform=None):
 
         super().__init__()
 
@@ -125,12 +130,32 @@ class VolcanoDataset(Dataset):
             x_train[i,:,:,1] = torch.sin(torch.tensor(phi[:res, :res]))
 
         self.x_train = x_train
+        self.transform = transform
+
+    def _to_fhw(self, x):
+        """Convert x into format (f, h, w)"""
+        assert len(x.shape) == 3
+        return x.swapaxes(2,1).swapaxes(1,0)
+
+    def _to_hwf(self, x):
+        """Convert x into format (h, w, f)"""
+        assert len(x.shape) == 3
+        return x.swapaxes(0,1).swapaxes(1,2)
 
     def __len__(self):
         return len(self.x_train)
 
     def __getitem__(self, idc):
-        return self.x_train[idc]
+        if self.transform is None:
+            return self.x_train[idc]
+        else:
+            # convert back to (h, w, f) format
+            return self._to_hwf(
+                self.transform(
+                    # convert to (f, h, w) format
+                    self._to_fhw(self.x_train[idc])
+                )
+            )
 
     def __extra_repr__(self):
         return "shape={}, min={}, max={}".format(len(self.x_train), 
@@ -287,7 +312,14 @@ def run(args):
     datadir = os.environ.get("DATA_DIR", None)
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
-    full_dataset = VolcanoDataset(root=datadir)
+    if args.augment:
+        transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5)
+        ])
+    else:
+        transform = None
+    full_dataset = VolcanoDataset(root=datadir, transform=transform)
     rnd_state = np.random.RandomState(seed=0)
     dataset_idcs = np.arange(0, len(full_dataset))
     rnd_state.shuffle(dataset_idcs)
@@ -326,17 +358,21 @@ def run(args):
         start_epoch = chkpt['stats']['epoch']
         print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
-    # z_t ~ N(0,I), as per annealed SGLD algorithm
-    noise_sampler = GaussianRF_idct(s, s,
+    if args.white_noise:
+        print("Using independent Gaussian noise...")
+        noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
+        init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
+    else:
+        noise_sampler = GaussianRF_idct(s, s,
+                                        alpha=args.alpha, 
+                                        tau=args.tau,
+                                        sigma = 1.0, 
+                                        device=device)
+        init_sampler = GaussianRF_idct(s, s, 
                                     alpha=args.alpha, 
-                                    tau=args.tau,
-                                    sigma = 1.0, 
+                                    tau=args.tau, 
+                                    sigma = args.sigma_x0,
                                     device=device)
-    init_sampler = GaussianRF_idct(s, s, 
-                                   alpha=args.alpha, 
-                                   tau=args.tau, 
-                                   sigma = args.sigma_x0,
-                                   device=device)
 
     init_samples = init_sampler.sample(5).cpu()
     for ext in ['png', 'pdf']:
@@ -478,7 +514,6 @@ def run(args):
             var_generated = fn_outs['var']
 
             # Dump this out to disk as well.
-
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
@@ -491,7 +526,19 @@ def run(args):
                         "samples",
                         "{}.{}".format(ep+1, ext)
                     )
-                )                                                      
+                )
+
+            # Nikola's suggestion: print the mean sample for training
+            # set and generated set.
+            mean_samples = torch.cat(( 
+                train_dataset.dataset.x_train.mean(dim=0, keepdim=True), 
+                u.mean(dim=0, keepdim=True).detach().cpu()
+            ), dim=0)
+            plot_samples(
+                mean_samples,  # of shape (2, res, res, 2)
+                outfile=os.path.join(savedir, "samples", "mean_sample_{}.png".format(ep+1))
+            )
+                                                        
             # Keep track of best skew metric, and save
             # its samples.
             if w_skew < best_skew:

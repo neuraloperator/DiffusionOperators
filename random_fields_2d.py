@@ -117,5 +117,6 @@ class IndependentGaussian(object):
 
     def sample(self, N):
         z = torch.randn((N, self.Ln1, self.Ln2, 2)).normal_(0, self.sigma)
-        z = z.to(self.device)
+        if self.device is not None:
+            z = z.to(self.device)
         return z
