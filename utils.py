@@ -3,6 +3,9 @@ import torch.fft as fft
 from tqdm import tqdm
 import numpy as np
 
+import os
+import matplotlib.pyplot as plt
+
 class DotDict(dict):
     """
     a dictionary that supports dot notation 
@@ -89,4 +92,77 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         
     return x0
 
-    
+# Plotting functions
+
+def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    samples = samples.cpu().numpy()
+    numb_fig = samples.shape[0]
+    fig, ax = plt.subplots(1, numb_fig, figsize=figsize, squeeze=False)
+    for i in range(numb_fig):
+        bar = ax[0][i].imshow(samples[i,:,:,0], extent=[0,1,0,1])
+    cax = fig.add_axes([ax[0][numb_fig-1].get_position().x1+0.01,
+                        ax[0][numb_fig-1].get_position().y0,0.02,
+                        ax[0][numb_fig-1].get_position().height])
+    plt.colorbar(bar, cax=cax)
+    plt.savefig(outfile, bbox_inches='tight')
+
+def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
+                 subtitles=None,
+                 figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    ncol = samples.size(0)
+    if subtitles is not None:
+        assert len(subtitles) == ncol
+    fig, ax = plt.subplots(1, ncol, figsize=figsize)
+    for j in range(ncol):
+        phase = torch.atan2(samples[j,:,:,1], 
+                            samples[j,:,:,0]).cpu().detach().numpy()
+        phase = (phase + np.pi) % (2 * np.pi) - np.pi
+        bar = ax[j].imshow(phase,  
+                           cmap='RdYlBu', 
+                           vmin = -np.pi, 
+                           vmax=np.pi,extent=[0,1,0,1])
+        if subtitles is not None:
+            ax[j].set_title(subtitles[j])
+    cax = fig.add_axes(
+        [ax[ncol-1].get_position().x1+0.01,
+         ax[ncol-1].get_position().y0,0.02,
+         ax[ncol-1].get_position().height]
+    )
+    if title is not None:
+        fig.suptitle(title)
+    plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
+    plt.savefig(outfile, bbox_inches='tight')
+
+def plot_noised_samples(samples: torch.Tensor, 
+                        outfile: str, 
+                        title: str = None,
+                        subtitles=None,
+                        figsize=(16,4)):
+    basedir = os.path.dirname(outfile)
+    if not os.path.exists(basedir):
+        os.makedirs(basedir)
+    nrow = ncol = int(np.sqrt(samples.size(0)))
+    if subtitles is not None:
+        assert len(subtitles) == ncol*nrow
+    fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
+    for i in range(nrow):
+        for j in range(ncol):
+            phase = torch.atan2(samples[i*nrow + j,:,:,1], 
+                                samples[i*nrow + j,:,:,0]).cpu().detach().numpy()
+            phase = (phase + np.pi) % (2 * np.pi) - np.pi
+            bar = ax[i][j].imshow(phase,  
+                            cmap='RdYlBu', 
+                            vmin = -np.pi, 
+                            vmax=np.pi,extent=[0,1,0,1])
+            if subtitles is not None:
+                ax[i][j].set_title(subtitles[i*nrow + j])
+    if title is not None:
+        fig.suptitle(title)
+    fig.tight_layout()
+    plt.savefig(outfile, bbox_inches='tight')

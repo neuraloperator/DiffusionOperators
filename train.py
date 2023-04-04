@@ -13,33 +13,28 @@ from scipy.stats import wasserstein_distance as w_distance
 
 from timeit import default_timer
 
-from utils import sigma_sequence, avg_spectrum, sample_trace, DotDict, circular_skew, circular_var
-from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct, IndependentGaussian
+from utils import (sigma_sequence, 
+                   avg_spectrum, 
+                   sample_trace, 
+                   DotDict, 
+                   circular_skew, 
+                   circular_var,
+                   plot_noise,
+                   plot_noised_samples,
+                   plot_samples)
+from random_fields_2d import (PeriodicGaussianRF2d, 
+                              GaussianRF_idct, 
+                              IndependentGaussian)
 # from models import FNO2d, UNO
 from models import UNO
 
 import numpy as np
-import scipy.io
-import matplotlib.pyplot as plt
+#import scipy.io
 
 from tqdm import tqdm
 import glob
 
 device = torch.device('cuda:0')
-
-"""
-L = 10              ##
-sigma_1 = 1.0       ##
-sigma_L = 0.01      ##
-npad = 8            ##
-sigma = sigma_sequence(sigma_1, sigma_L, L).to(device)
-Ntest = 5           ##
-d_co_domain = 32    ##
-
-batch_size = 16     ##
-epochs = 300        ##
-record_int = 10     ##
-"""
 
 def count_params(model):
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -199,80 +194,6 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     #assert len(buf) == n_examples
     return buf, fn_outputs
 
-def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
-    basedir = os.path.dirname(outfile)
-    if not os.path.exists(basedir):
-        os.makedirs(basedir)
-    samples = samples.cpu().numpy()
-    numb_fig = samples.shape[0]
-    fig, ax = plt.subplots(1, numb_fig, figsize=figsize, squeeze=False)
-    for i in range(numb_fig):
-        bar = ax[0][i].imshow(samples[i,:,:,0], extent=[0,1,0,1])
-    cax = fig.add_axes([ax[0][numb_fig-1].get_position().x1+0.01,
-                        ax[0][numb_fig-1].get_position().y0,0.02,
-                        ax[0][numb_fig-1].get_position().height])
-    plt.colorbar(bar, cax=cax)
-    plt.savefig(outfile, bbox_inches='tight')
-
-def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
-                 subtitles=None,
-                 figsize=(16,4)):
-    basedir = os.path.dirname(outfile)
-    if not os.path.exists(basedir):
-        os.makedirs(basedir)
-    ncol = samples.size(0)
-    if subtitles is not None:
-        assert len(subtitles) == ncol
-    fig, ax = plt.subplots(1, ncol, figsize=figsize)
-    for j in range(ncol):
-        phase = torch.atan2(samples[j,:,:,1], 
-                            samples[j,:,:,0]).cpu().detach().numpy()
-        phase = (phase + np.pi) % (2 * np.pi) - np.pi
-        bar = ax[j].imshow(phase,  
-                           cmap='RdYlBu', 
-                           vmin = -np.pi, 
-                           vmax=np.pi,extent=[0,1,0,1])
-        if subtitles is not None:
-            ax[j].set_title(subtitles[j])
-    cax = fig.add_axes(
-        [ax[ncol-1].get_position().x1+0.01,
-         ax[ncol-1].get_position().y0,0.02,
-         ax[ncol-1].get_position().height]
-    )
-    if title is not None:
-        fig.suptitle(title)
-    plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
-    plt.savefig(outfile, bbox_inches='tight')
-
-def plot_noised_samples(samples: torch.Tensor, 
-                        outfile: str, 
-                        title: str = None,
-                        subtitles=None,
-                        figsize=(16,4)):
-    basedir = os.path.dirname(outfile)
-    if not os.path.exists(basedir):
-        os.makedirs(basedir)
-    nrow = ncol = int(np.sqrt(samples.size(0)))
-    if subtitles is not None:
-        assert len(subtitles) == ncol*nrow
-    fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
-    for i in range(nrow):
-        for j in range(ncol):
-            phase = torch.atan2(samples[i*nrow + j,:,:,1], 
-                                samples[i*nrow + j,:,:,0]).cpu().detach().numpy()
-            phase = (phase + np.pi) % (2 * np.pi) - np.pi
-            bar = ax[i][j].imshow(phase,  
-                            cmap='RdYlBu', 
-                            vmin = -np.pi, 
-                            vmax=np.pi,extent=[0,1,0,1])
-            if subtitles is not None:
-                ax[i][j].set_title(subtitles[i*nrow + j])
-    if title is not None:
-        fig.suptitle(title)
-    fig.tight_layout()
-    plt.savefig(outfile, bbox_inches='tight')
-
-
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
     Notes:
@@ -302,13 +223,16 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     loss = ((term1+term2)**2).mean()
     return loss
 
-def run(args):
+def init_model(args):
+    """Return the model and datasets"""
 
+    # Create the savedir if necessary.
     savedir = args.savedir
     print("savedir: {}".format(savedir))
     if not os.path.exists(savedir):
         os.makedirs(savedir)
 
+    # Dataset generation.
     datadir = os.environ.get("DATA_DIR", None)
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
@@ -333,22 +257,18 @@ def run(args):
     )
     print("Len of train / valid: {} / {}".format(len(train_dataset),
                                                  len(valid_dataset)))
-          
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
-                              shuffle=True, num_workers=args.num_workers)
-    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, 
-                              shuffle=True, num_workers=args.num_workers)
 
+    # Initialise the model
     s = 128 - 8
-    h = 2*math.pi/s
-
-    # fno = FNO2d(s=s, width=64, modes=80, out_channels = 2, in_channels = 2)
-    fno = UNO(2+2, args.d_co_domain, s = s, pad=args.npad, fmult=args.fmult, mult_dims=args.mult_dims).to(device)
+    fno = UNO(2+2, 
+              args.d_co_domain, 
+              s = s, 
+              pad=args.npad, 
+              fmult=args.fmult, 
+              mult_dims=args.mult_dims).to(device)
     print(fno)
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
-    optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
-    print(optimizer)
 
     # Load checkpoint here if it exists.
     start_epoch = 0
@@ -358,6 +278,8 @@ def run(args):
         start_epoch = chkpt['stats']['epoch']
         print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
+    # Initialise samplers.
+    # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
         print("Using independent Gaussian noise...")
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
@@ -373,6 +295,48 @@ def run(args):
                                     tau=args.tau, 
                                     sigma = args.sigma_x0,
                                     device=device)
+
+    if args.sigma_1 < args.sigma_L:
+        raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
+            "decreasing. You probably need to switch these two arguments around.")
+
+    if args.schedule == 'geometric':
+        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
+    elif args.schedule == 'linear':
+        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
+    else:
+        raise ValueError("Unknown schedule: {}".format(args.schedule))
+    
+    print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
+        sigma[0],
+        sigma[-1],
+        args.L
+    ))
+
+    return fno, \
+        start_epoch, \
+        (train_dataset, valid_dataset), \
+        (init_sampler, noise_sampler, sigma)
+ 
+def run(args):
+
+    savedir = args.savedir
+
+    # TODO: clean up
+    fno, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
+        init_model(args)
+          
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers)
+    valid_loader = DataLoader(
+        valid_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers
+    )
 
     init_samples = init_sampler.sample(5).cpu()
     for ext in ['png', 'pdf']:
@@ -405,23 +369,6 @@ def run(args):
             )
         )
 
-    if args.sigma_1 < args.sigma_L:
-        raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
-            "decreasing. You probably need to switch these two arguments around.")
-
-    if args.schedule == 'geometric':
-        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
-    elif args.schedule == 'linear':
-        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
-    else:
-        raise ValueError("Unknown schedule: {}".format(args.schedule))
-    
-    print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
-        sigma[0],
-        sigma[-1],
-        args.L
-    ))
-
     # Save config file
     with open(os.path.join(savedir, "config.json"), "w") as f:
         f.write(json.dumps(args))
@@ -432,6 +379,9 @@ def run(args):
     skew_train = circular_skew(train_dataset.dataset.x_train).numpy()
     with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
         pickle.dump(dict(var=var_train, skew=skew_train), f)
+
+    optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
+    print(optimizer)
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     best_skew, best_var = np.inf, np.inf
