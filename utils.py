@@ -58,6 +58,18 @@ def avg_spectrum(u):
 
     return torch.abs(fft.rfft(u, norm='forward')[0:s//2]).mean(0)
 
+def min_max_norm(u, eps=1e-6):
+    # (x - min)
+    # ---------  = z
+    # (max-min)
+    return (u - u.min()) / (u.max() - u.min() + eps)
+
+def rescale(z, min_, max_):
+    # x = z(max-min) + min
+    return z*(max_-min_) + min_
+
+def format_tuple(x, y):
+    return "({:.3f}, {:.3f})".format(x, y)
 
 def sample_white(score, sigma, x0, epsilon=2e-5, T=200):
     L = sigma.size(0)

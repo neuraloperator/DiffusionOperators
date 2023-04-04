@@ -3,7 +3,15 @@ import torch
 import os
 import json
 import argparse
-from utils import DotDict, circular_skew, circular_var
+import numpy as np
+from utils import (DotDict, 
+                   circular_skew, 
+                   circular_var, 
+                   plot_samples, 
+                   plot_noised_samples, 
+                   min_max_norm, 
+                   format_tuple,
+                   rescale)
 
 from train import init_model, sample
 
@@ -14,6 +22,10 @@ def parse_args():
                         help="Full path of the experiment: <savedir>/<group>/<id>")
     parser.add_argument("--savedir", type=str, required=True,
                         help="dump stats here")
+    parser.add_argument("--mode", type=str, 
+                        choices=['generate', 'plot'],
+                        default='generate',
+                        help="Which mode to use?")
     parser.add_argument("--val_batch_size", type=int, default=512,
                         help="Batch size used for generating samples at inference time")
     parser.add_argument("--Ntest", type=int, default=1024,
@@ -42,17 +54,70 @@ if __name__ == '__main__':
     fno, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
         init_model(cfg)
 
-    u, fn_outs = sample(
-        fno, init_sampler, noise_sampler, sigma, 
-        bs=args.val_batch_size, n_examples=args.Ntest, T=cfg.T,
-        epsilon=cfg.epsilon,
-        fns={"skew": circular_skew, "var": circular_var}
-    )
-    skew_generated = fn_outs['skew']
-    var_generated = fn_outs['var']
+    if args.mode == 'generate':
 
-    torch.save(
-        (u.cpu(), skew_generated, var_generated),
-        os.path.join(args.savedir, "samples.pkl")
-    )
-    
+        # Generate samples and dump them out to <savedir>/samples.pkl.
+
+        u, fn_outs = sample(
+            fno, init_sampler, noise_sampler, sigma, 
+            bs=args.val_batch_size, n_examples=args.Ntest, T=cfg.T,
+            epsilon=cfg.epsilon,
+            fns={"skew": circular_skew, "var": circular_var}
+        )
+        skew_generated = fn_outs['skew']
+        var_generated = fn_outs['var']
+
+        torch.save(
+            (u.cpu(), skew_generated, var_generated),
+            os.path.join(args.savedir, "samples.pkl")
+        )
+
+    elif args.mode == 'plot':
+
+        samples, skew_generated, var_generated = torch.load(
+            os.path.join(args.savedir, "samples.pkl")
+        )
+
+        plot_noised_samples(
+            samples[0:16],
+            outfile=os.path.join(
+                args.savedir, 
+                "samples.png"
+            ),
+            figsize=(8,8)
+            #title=str(dict(epoch=ep+1, var=best_var))
+        )
+
+        x_train = train_dataset.dataset.x_train
+        mean_train_set = x_train.mean(dim=0, keepdim=True)
+
+
+        #import pdb; pdb.set_trace()
+        
+        mean_sample_set = samples.mean(dim=0, keepdim=True).detach().cpu()
+        print("min max of mean train set: {:.3f}, {:.3f}".format(
+            mean_train_set.min(), mean_train_set.max()
+        ))
+        print("min max of mean sample set: {:.3f}, {:.3f}".format(
+            mean_sample_set.min(), mean_sample_set.max()
+        ))
+        
+
+        mean_samples = torch.cat((
+            mean_train_set, mean_sample_set,
+        ), dim=0)
+        plot_samples(
+            mean_samples,  # of shape (2, res, res, 2)
+            subtitles=[
+                format_tuple(mean_train_set.min().item(), mean_train_set.max().item()),
+                format_tuple(mean_sample_set.min().item(), mean_sample_set.max().item())
+            ],
+            outfile=os.path.join(args.savedir, "mean_sample.png")
+        )
+
+        #import pdb; pdb.set_trace()
+
+    else:
+
+        raise ValueError("args.mode={} not recognised".format(args.mode))
+        
