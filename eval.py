@@ -4,6 +4,7 @@ import os
 import json
 import argparse
 import numpy as np
+import pickle
 from utils import (DotDict, 
                    circular_skew, 
                    circular_var, 
@@ -67,10 +68,15 @@ if __name__ == '__main__':
         skew_generated = fn_outs['skew']
         var_generated = fn_outs['var']
 
-        torch.save(
-            (u.cpu(), skew_generated, var_generated),
-            os.path.join(args.savedir, "samples.pkl")
-        )
+        # samples.pkl contains everything
+        torch.save((u.cpu(), skew_generated, var_generated),
+                   os.path.join(args.savedir, "samples.pkl"))
+
+        # stats.pkl just contains skew and variance
+        with open(os.path.join(args.savedir, "stats.pkl"), "wb") as f:
+            pickle.dump(
+                dict(var=var_generated, skew=skew_generated), f
+            )
 
     elif args.mode == 'plot':
 
@@ -90,9 +96,6 @@ if __name__ == '__main__':
 
         x_train = train_dataset.dataset.x_train
         mean_train_set = x_train.mean(dim=0, keepdim=True)
-
-
-        #import pdb; pdb.set_trace()
         
         mean_sample_set = samples.mean(dim=0, keepdim=True).detach().cpu()
         print("min max of mean train set: {:.3f}, {:.3f}".format(

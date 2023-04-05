@@ -13,11 +13,14 @@ from scipy.stats import wasserstein_distance as w_distance
 
 from timeit import default_timer
 
+from datasets import VolcanoDataset
+
 from utils import (sigma_sequence, 
                    avg_spectrum, 
                    sample_trace, 
+                   sample_trace_jit,
                    DotDict, 
-                   circular_skew, 
+                   circular_skew,
                    circular_var,
                    plot_noise,
                    plot_noised_samples,
@@ -32,7 +35,6 @@ import numpy as np
 #import scipy.io
 
 from tqdm import tqdm
-import glob
 
 device = torch.device('cuda:0')
 
@@ -95,67 +97,6 @@ def parse_args():
 
 #Inport data
 
-class VolcanoDataset(Dataset):
-
-    def __init__(self, root, ntrain=4096, transform=None):
-
-        super().__init__()
-
-        res = 128-8
-        files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
-        if len(files) == 0:
-            raise Exception("Cannot find any *.int files here.")
-        print("# files detected: {}".format(len(files)))
-        if len(files) != ntrain:
-            raise ValueError("ntrain=={} but we only detected {} files".\
-                format(ntrain, len(files)))
-
-        x_train = torch.zeros(ntrain, res, res, 2).float()
-        nline = 128
-        nsamp = 128
-        for i, f in enumerate(files):
-            dtype = np.float32
-
-            with open(f, 'rb') as fn:
-                load_arr = np.frombuffer(fn.read(), dtype=dtype)
-                img = np.array(load_arr.reshape((nline, nsamp, -1)))
-
-            phi = np.angle(img[:,:,0] + img[:,:,1]*1j)
-            x_train[i,:,:,0] = torch.cos(torch.tensor(phi[:res, :res]))
-            x_train[i,:,:,1] = torch.sin(torch.tensor(phi[:res, :res]))
-
-        self.x_train = x_train
-        self.transform = transform
-
-    def _to_fhw(self, x):
-        """Convert x into format (f, h, w)"""
-        assert len(x.shape) == 3
-        return x.swapaxes(2,1).swapaxes(1,0)
-
-    def _to_hwf(self, x):
-        """Convert x into format (h, w, f)"""
-        assert len(x.shape) == 3
-        return x.swapaxes(0,1).swapaxes(1,2)
-
-    def __len__(self):
-        return len(self.x_train)
-
-    def __getitem__(self, idc):
-        if self.transform is None:
-            return self.x_train[idc]
-        else:
-            # convert back to (h, w, f) format
-            return self._to_hwf(
-                self.transform(
-                    # convert to (f, h, w) format
-                    self._to_fhw(self.x_train[idc])
-                )
-            )
-
-    def __extra_repr__(self):
-        return "shape={}, min={}, max={}".format(len(self.x_train), 
-                                                 self.x_train.min(), 
-                                                 self.x_train.max())
 
 @torch.no_grad()
 def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
@@ -380,13 +321,20 @@ def run(args):
     with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
-    optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr, foreach=True)
     print(optimizer)
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     best_skew, best_var = np.inf, np.inf
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
+
+        u, fn_outs = sample(
+            fno, init_sampler, noise_sampler, sigma, 
+            bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
+            epsilon=args.epsilon,
+            fns={"skew": circular_skew, "var": circular_var}
+        )
 
         fno.train()
         pbar = tqdm(total=len(train_loader), desc="Train {}/{}".format(ep+1, args.epochs))
@@ -396,6 +344,7 @@ def run(args):
 
             u = u.to(device)
 
+            #with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
@@ -418,7 +367,7 @@ def run(args):
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
                     idcs = torch.linspace(0, len(sigma)-1, 16).long().to(u.device)
-                    this_sigmas = sigma[idcs]
+                    this_sigmas = sigma[idc]
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
                     print("noise magnitudes: min={}, max={}".format(noise.min(),
                                                                     noise.max()))
@@ -500,8 +449,14 @@ def run(args):
                             savedir, 
                             "samples",
                             "best_skew.{}".format(ext)
-                        ),                        title=str(dict(epoch=ep+1, skew=best_skew))
-                    )                         
+                        ),                        
+                        title=str(dict(epoch=ep+1, skew=best_skew))
+                    )
+                # Save model corresponding to best skew
+                torch.save(
+                    dict(weights=fno.state_dict(), stats=buf),
+                    os.path.join(savedir, "model.w_skew.pt")
+                )
                 with open(os.path.join(savedir, "samples", "best_skew.pkl"), "wb") as f:
                     pickle.dump(
                         dict(var=var_generated, skew=skew_generated), f
@@ -521,6 +476,11 @@ def run(args):
                         ),
                         title=str(dict(epoch=ep+1, var=best_var))
                     )
+                # Save model corresponding to best variance
+                torch.save(
+                    dict(weights=fno.state_dict(), stats=buf),
+                    os.path.join(savedir, "model.w_var.pt")
+                )
                 with open(os.path.join(savedir, "samples", "best_var.pkl"), "wb") as f:
                     pickle.dump(
                         dict(var=var_generated, skew=skew_generated), f

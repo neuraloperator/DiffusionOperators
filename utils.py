@@ -104,6 +104,22 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         
     return x0
 
+#@torch.jit.script
+def sample_trace_jit(scorenet, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
+    L = len(sigma)
+    T = int(T)
+    for j in range(L):
+        alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
+        curr_j = torch.LongTensor([j]*x0.size(0)).to(x0.device)
+        for t in range(T):
+            if j == L - 1 and t == T - 1:
+                x0 = x0 + 0.5*alpha*scorenet(x0, curr_j, sigma[j].view(1,1,1,1))
+            else:
+                x0 = x0 + 0.5*alpha*scorenet(x0, curr_j, sigma[j].view(1,1,1,1)) + \
+                    torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
+        
+    return x0
+
 # Plotting functions
 
 def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
