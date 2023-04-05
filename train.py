@@ -15,6 +15,8 @@ from timeit import default_timer
 
 from datasets import VolcanoDataset
 
+from ema import EMAHelper
+
 from utils import (sigma_sequence, 
                    avg_spectrum, 
                    sample_trace, 
@@ -92,6 +94,7 @@ def parse_args():
     # Misc
     parser.add_argument("--num_workers", type=int, default=2,
                         help="Number of workers for data loader")
+    parser.add_argument("--ema_rate", type=float, default=None)
     args = parser.parse_args()
     return args
 
@@ -211,12 +214,19 @@ def init_model(args):
     print("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
 
+    ema_helper = None
+    if args.ema_rate is not None:
+        ema_helper = EMAHelper(mu=args.ema_rate)
+        ema_helper.register(fno)
+
     # Load checkpoint here if it exists.
     start_epoch = 0
     if os.path.exists(os.path.join(savedir, "model.pt")):
         chkpt = torch.load(os.path.join(savedir, "model.pt"))
         fno.load_state_dict(chkpt['weights'])
         start_epoch = chkpt['stats']['epoch']
+        if ema_helper is not None and hasattr(chkpt, 'ema_helper'):
+            ema_helper.load_state_dict(chkpt['ema_helper'])
         print("Found checkpoint, resuming from epoch {}".format(start_epoch))
 
     # Initialise samplers.
@@ -254,18 +264,38 @@ def init_model(args):
         args.L
     ))
 
+    # TODO: this needs to be cleaned up badly
     return fno, \
+        ema_helper, \
         start_epoch, \
         (train_dataset, valid_dataset), \
         (init_sampler, noise_sampler, sigma)
+
+
+class ValidationMetric():
+    def __init__(self):
+        self.best = np.inf
+    def update(self, x):
+        """Return true if the metric is the best so far, else false"""
+        if x < self.best:
+            self.best = x
+            return True
+        return False
+    def state_dict(self):
+        return {'best': self.best}
+    def load_state_dict(self, dd):
+        self.best = dd['best']
  
 def run(args):
 
     savedir = args.savedir
 
     # TODO: clean up
-    fno, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
+    fno, ema_helper, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
         init_model(args)
+
+    #with ema_helper:
+    #    print("test")
           
     train_loader = DataLoader(
         train_dataset, 
@@ -325,16 +355,14 @@ def run(args):
     print(optimizer)
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
-    best_skew, best_var = np.inf, np.inf
+    metric_trackers = {
+        'w_skew': ValidationMetric(), 
+        'w_var': ValidationMetric(),
+        "w_total": ValidationMetric()
+    }
+    
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
-
-        u, fn_outs = sample(
-            fno, init_sampler, noise_sampler, sigma, 
-            bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
-            epsilon=args.epsilon,
-            fns={"skew": circular_skew, "var": circular_var}
-        )
 
         fno.train()
         pbar = tqdm(total=len(train_loader), desc="Train {}/{}".format(ep+1, args.epochs))
@@ -350,6 +378,9 @@ def run(args):
             loss.backward()
             optimizer.step()
             pbar.update(1)
+
+            if ema_helper is not None:
+                ema_helper.update(fno)
             
             metrics = dict(loss=loss.item())
             if iter_ % 10 == 0:
@@ -367,10 +398,10 @@ def run(args):
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
                     idcs = torch.linspace(0, len(sigma)-1, 16).long().to(u.device)
-                    this_sigmas = sigma[idc]
+                    this_sigmas = sigma[idcs]
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
-                    print("noise magnitudes: min={}, max={}".format(noise.min(),
-                                                                    noise.max()))
+                    #print("noise magnitudes: min={}, max={}".format(noise.min(),
+                    #                                                noise.max()))
                     plot_noised_samples(
                         # Use the same example, and make a 4x4 grid of points
                         u[0:1].repeat(16, 1, 1, 1) + noise, 
@@ -387,7 +418,7 @@ def run(args):
                         figsize=(8,8)
                     )
 
-        pbar.close()     
+        pbar.close()
 
         fno.eval()
         buf_valid = dict(loss_valid=[])
@@ -403,19 +434,24 @@ def run(args):
         if (ep + 1) % args.record_interval == 0:
             recorded = True
 
-            u, fn_outs = sample(
-                fno, init_sampler, noise_sampler, sigma, 
-                bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
-                epsilon=args.epsilon,
-                fns={"skew": circular_skew, "var": circular_var}
-            )
-            skew_generated = fn_outs['skew']
-            var_generated = fn_outs['var']
+            with ema_helper:
+                # This context mgr automatically applies EMA
+                u, fn_outs = sample(
+                    fno, init_sampler, noise_sampler, sigma, 
+                    bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
+                    epsilon=args.epsilon,
+                    fns={"skew": circular_skew, "var": circular_var}
+                )
+                skew_generated = fn_outs['skew']
+                var_generated = fn_outs['var']
 
             # Dump this out to disk as well.
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
+            metric_vals = {"w_skew": w_skew,
+                           "w_var": w_var,
+                           "w_total": w_total}
 
             for ext in ['pdf', 'png']:
                 plot_samples(
@@ -438,64 +474,45 @@ def run(args):
                 outfile=os.path.join(savedir, "samples", "mean_sample_{}.png".format(ep+1))
             )
                                                         
-            # Keep track of best skew metric, and save
-            # its samples.
-            if w_skew < best_skew:
-                best_skew = w_skew
-                for ext in ['pdf', 'png']:
-                    plot_samples(
-                        u[0:5], 
-                        outfile=os.path.join(
-                            savedir, 
-                            "samples",
-                            "best_skew.{}".format(ext)
-                        ),                        
-                        title=str(dict(epoch=ep+1, skew=best_skew))
-                    )
-                # Save model corresponding to best skew
-                torch.save(
-                    dict(weights=fno.state_dict(), stats=buf),
-                    os.path.join(savedir, "model.w_skew.pt")
-                )
-                with open(os.path.join(savedir, "samples", "best_skew.pkl"), "wb") as f:
-                    pickle.dump(
-                        dict(var=var_generated, skew=skew_generated), f
-                    )
-
-            # Keep track of best var metric, and save
-            # its samples.
-            if w_var < best_var:
-                best_var = w_var
-                for ext in ['pdf', 'png']:
-                    plot_samples(
-                        u[0:5], 
-                        outfile=os.path.join(
-                            savedir, 
-                            "samples",
-                            "best_var.{}".format(ext)
+            # Keep track of each metric, and save the following:
+            for metric_key, metric_val in metric_vals.items():
+                if metric_trackers[metric_key].update(metric_val):
+                    print("new best metric for {}: {:.3f}".format(metric_key, metric_val))
+                    for ext in ['pdf', 'png']:
+                        plot_samples(
+                            u[0:5], 
+                            outfile=os.path.join(
+                                savedir, 
+                                "samples",
+                                "best_{}.{}".format(metric_key, ext)
+                            ),                        
+                            title=str(
+                                {'epoch':ep+1, metric_key: "{:.3f}".format(metric_val)}
+                            )
+                        )
+                    # TODO: refactor
+                    torch.save(
+                        dict(
+                            weights=fno.state_dict(),
+                            metrics={k:v.state_dict() for k,v in metric_trackers.items()},
+                            ema_helper=ema_helper.state_dict()
                         ),
-                        title=str(dict(epoch=ep+1, var=best_var))
+                        os.path.join(savedir, "model.{}.pt".format(metric_key))
                     )
-                # Save model corresponding to best variance
-                torch.save(
-                    dict(weights=fno.state_dict(), stats=buf),
-                    os.path.join(savedir, "model.w_var.pt")
-                )
-                with open(os.path.join(savedir, "samples", "best_var.pkl"), "wb") as f:
-                    pickle.dump(
-                        dict(var=var_generated, skew=skew_generated), f
-                    )
-            
-            #print(ep+1, train_err, default_timer() - t1)
+                    with open(os.path.join(savedir, 
+                                           "samples", "best_{}.pkl".format(metric_key)), "wb") as f:
+                        pickle.dump(
+                            dict(var=var_generated, skew=skew_generated), f
+                        )
             
         else:
-            #print(ep+1, train_err, default_timer() - t1)
             pass
 
         buf = {k:np.mean(v) for k,v in buf.items()}
         buf.update({k:np.mean(v) for k,v in buf_valid.items()})
         buf["epoch"] = ep
         buf["lr"] = optimizer.state_dict()['param_groups'][0]['lr']
+        buf["time"] = default_time() - t1
         #buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         if recorded:
             buf["w_skew"] = w_skew
@@ -506,14 +523,15 @@ def run(args):
         print(json.dumps(buf))
 
         # Save checkpoints
+        # TODO: refactor
         torch.save(
-            dict(weights=fno.state_dict(), stats=buf),
+            dict(
+                weights=fno.state_dict(),
+                metrics={k:v.state_dict() for k,v in metric_trackers.items()},
+                ema_helper=ema_helper.state_dict()
+            ),
             os.path.join(savedir, "model.pt")
         )
-        # Save early stopping checkpoints for skew and variance
-
-
-    #scipy.io.savemat('gm_trace/stats.mat', {'stats': stats})
 
 if __name__ == '__main__':
 

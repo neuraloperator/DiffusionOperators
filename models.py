@@ -251,9 +251,32 @@ class SinusoidalPositionEmbeddings(nn.Module):
         embeddings = time[:, None] * embeddings[None, :]
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
+
+class UNO_Diffusion:
+    """Wrapper class which also stores the samplers and noise schedule"""
+    def __init__(self, uno, sigma, noise_sampler, init_sampler):
+        self.uno = uno
+        self.sigma = sigma
+        self.noise_sampler = noise_sampler
+        self.init_sampler = init_sampler
+    def __call__(self, *args, **kwargs):
+        return self.uno(*args **kwargs)
+    def state_dict(self):
+        return self.uno_state_dict()
+    def load_state_dict(self, dd):
+        return self.uno.load_state_dict(dd)
         
 class UNO(nn.Module):
-    def __init__(self, in_d_co_domain, d_co_domain, s , pad = 0, fmult=1.0, mult_dims=[1,2,4,4], factor=None, embed_dim=512):
+    """U-Shaped neural operator architecture"""
+    def __init__(self, 
+                 in_d_co_domain, 
+                 d_co_domain, 
+                 s,
+                 pad = 0, 
+                 fmult=1.0, 
+                 mult_dims=[1,2,4,4], 
+                 factor=None, 
+                 embed_dim=512):
         super(UNO, self).__init__()
 
         """
