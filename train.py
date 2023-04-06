@@ -512,7 +512,7 @@ def run(args):
         buf.update({k:np.mean(v) for k,v in buf_valid.items()})
         buf["epoch"] = ep
         buf["lr"] = optimizer.state_dict()['param_groups'][0]['lr']
-        buf["time"] = default_time() - t1
+        buf["time"] = default_timer() - t1
         #buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         if recorded:
             buf["w_skew"] = w_skew
