@@ -140,6 +140,7 @@ def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
 def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
                  subtitles=None,
                  figsize=(16,4)):
+    """LEGACY function"""
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
         os.makedirs(basedir)
@@ -167,11 +168,11 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None,
     plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
     plt.savefig(outfile, bbox_inches='tight')
 
-def plot_noised_samples(samples: torch.Tensor, 
-                        outfile: str, 
-                        title: str = None,
-                        subtitles=None,
-                        figsize=(16,4)):
+def plot_samples_grid(samples: torch.Tensor, 
+                      outfile: str, 
+                      title: str = None,
+                      subtitles=None,
+                      figsize=(16,4)):
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
         os.makedirs(basedir)

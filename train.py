@@ -25,7 +25,7 @@ from utils import (sigma_sequence,
                    circular_skew,
                    circular_var,
                    plot_noise,
-                   plot_noised_samples,
+                   plot_samples_grid,
                    plot_samples)
 from random_fields_2d import (PeriodicGaussianRF2d, 
                               GaussianRF_idct, 
@@ -37,6 +37,9 @@ import numpy as np
 #import scipy.io
 
 from tqdm import tqdm
+
+from setup_logger import get_logger
+logger = get_logger(__name__)
 
 device = torch.device('cuda:0')
 
@@ -79,6 +82,9 @@ def parse_args():
                         help="The T parameter for annealed SGLD (how many iters per sigma)")
     # U-Net specific
     parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
+    parser.add_argument("--num_freqs_input", type=int, default=0,
+                        help="How many frequencies do we use for Fourier features for the input (x,y) " + \
+                        "grid? (Not to be confused with fmult, which pertains to the Fourier convs.)")
     parser.add_argument("--fmult", type=float, default=0.25,
                         help="Multiplier for the number of Fourier modes per convolution." + \
                             "The number of modes will be set to int(dim/2 * fmult)")
@@ -167,12 +173,12 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     loss = ((term1+term2)**2).mean()
     return loss
 
-def init_model(args):
+def init_model(args, checkpoint="model.pt"):
     """Return the model and datasets"""
 
     # Create the savedir if necessary.
     savedir = args.savedir
-    print("savedir: {}".format(savedir))
+    logger.info("savedir: {}".format(savedir))
     if not os.path.exists(savedir):
         os.makedirs(savedir)
 
@@ -199,19 +205,22 @@ def init_model(args):
         full_dataset, 
         dataset_idcs[ int(len(dataset_idcs)*(1-args.val_size)) :: ]
     )
-    print("Len of train / valid: {} / {}".format(len(train_dataset),
-                                                 len(valid_dataset)))
+    logger.info("Len of train / valid: {} / {}".format(
+        len(train_dataset),
+        len(valid_dataset)
+    ))
 
     # Initialise the model
     s = 128 - 8
-    fno = UNO(2+2, 
+    fno = UNO(2,
               args.d_co_domain, 
               s = s, 
               pad=args.npad, 
               fmult=args.fmult, 
+              num_freqs_input=args.num_freqs_input,
               mult_dims=args.mult_dims).to(device)
-    print(fno)
-    print("# of trainable parameters: {}".format(count_params(fno)))
+    #(fno)
+    logger.info("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
 
     ema_helper = None
@@ -221,18 +230,26 @@ def init_model(args):
 
     # Load checkpoint here if it exists.
     start_epoch = 0
-    if os.path.exists(os.path.join(savedir, "model.pt")):
-        chkpt = torch.load(os.path.join(savedir, "model.pt"))
+    if os.path.exists(os.path.join(savedir, checkpoint)):
+        logger.info("Found checkpoint {}, resuming from epoch {}".\
+            format(checkpoint, start_epoch))
+        chkpt = torch.load(os.path.join(savedir, checkpoint))
         fno.load_state_dict(chkpt['weights'])
-        start_epoch = chkpt['stats']['epoch']
-        if ema_helper is not None and hasattr(chkpt, 'ema_helper'):
+        logger.info("metrics found in chkpt: {}".format(chkpt['metrics']))
+        #print(chkpt['stats'].keys())
+        #start_epoch = len(chkpt['stats']['loss'])
+        start_epoch = 0 #BUG
+        if ema_helper is not None and 'ema_helper' in chkpt:
+            logger.info("EMA enabled, loading EMA weights...")
             ema_helper.load_state_dict(chkpt['ema_helper'])
-        print("Found checkpoint, resuming from epoch {}".format(start_epoch))
+    else:
+        if checkpoint != "model.pt":
+            raise Exception("Cannot find checkpoint: {}".format(checkpoint))
 
     # Initialise samplers.
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
-        print("Using independent Gaussian noise...")
+        logger.warning("Using independent Gaussian noise, NOT grf noise...")
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
         init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
@@ -258,7 +275,7 @@ def init_model(args):
     else:
         raise ValueError("Unknown schedule: {}".format(args.schedule))
     
-    print("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
+    logger.info("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
         sigma[0],
         sigma[-1],
         args.L
@@ -402,7 +419,9 @@ def run(args):
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
                     #print("noise magnitudes: min={}, max={}".format(noise.min(),
                     #                                                noise.max()))
-                    plot_noised_samples(
+
+                    logger.info(os.path.join(savedir, "u_noised.png")) 
+                    plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
                         u[0:1].repeat(16, 1, 1, 1) + noise, 
                         outfile=os.path.join(savedir, "u_noised.png"), 
@@ -410,13 +429,29 @@ def run(args):
                             this_sigmas.cpu().numpy() ],
                         figsize=(8,8)
                     )
-                    
-                    plot_noised_samples(
+
+                    logger.info(os.path.join(savedir, "u_prior.png"))
+                    plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
                         init_sampler.sample(16),
                         outfile=os.path.join(savedir, "u_prior.png"), 
                         figsize=(8,8)
                     )
+
+                    x_train = train_dataset.dataset.x_train
+                    mean_samples = []
+                    for _ in range(16):
+                        perm = torch.randperm(len(x_train))[0:2048]
+                        mean_samples.append(x_train[perm].mean(dim=0, keepdims=True))
+                    mean_samples = torch.cat(mean_samples, dim=0)
+                    logger.info(os.path.join(savedir, "mean_subsamples.png"))                     
+                    plot_samples_grid(
+                        mean_samples,
+                        outfile=os.path.join(savedir, "mean_subsamples.png"),
+                        figsize=(8,8),
+                        title="mean images over training set (size 2048 subsamples)"
+                    )
+                    
 
         pbar.close()
 

@@ -3,6 +3,9 @@ from torch.utils.data import Dataset
 import glob
 import numpy as np
 
+from setup_logger import get_logger
+logger = get_logger(__name__)
+
 class VolcanoDataset(Dataset):
 
     def __init__(self, root, ntrain=4096, transform=None):
@@ -13,7 +16,7 @@ class VolcanoDataset(Dataset):
         files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
         if len(files) == 0:
             raise Exception("Cannot find any *.int files here.")
-        print("# files detected: {}".format(len(files)))
+        logger.info("# files detected: {}".format(len(files)))
         if len(files) != ntrain:
             raise ValueError("ntrain=={} but we only detected {} files".\
                 format(ntrain, len(files)))

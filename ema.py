@@ -60,13 +60,14 @@ class EMAHelper(object):
         return backup
 
     def __enter__(self):
-        #print("Entering...")
+        print("Entering EMA...")
         # Clone original module's weights and store them temporarily
         self.orig_weights = self.clone()
         # Then load in EMA weights
         self.apply()
 
     def __exit__(self, type, value, traceback):
+        print("Exiting EMA...")
         # Load original module's weights back in
         self.module.load_state_dict(self.orig_weights)
         # Clear it from memory

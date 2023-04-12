@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from run_nerf_helpers import get_embedder
+
 from einops import rearrange, reduce
 
 import copy
@@ -275,6 +277,7 @@ class UNO(nn.Module):
                  pad = 0, 
                  fmult=1.0, 
                  mult_dims=[1,2,4,4], 
+                 num_freqs_input: int = 0,
                  factor=None, 
                  embed_dim=512):
         super(UNO, self).__init__()
@@ -300,7 +303,12 @@ class UNO(nn.Module):
 
         time_dim = d_co_domain*4
 
-        self.init_conv = nn.Conv2d(in_d_co_domain, d_co_domain, 1, padding=0)
+        dim_grid = 2
+        embedder, dim_grid = get_embedder(num_freqs_input, input_dims=in_d_co_domain)
+        self.embedder = embedder
+        self.dim_grid = dim_grid
+        
+        self.init_conv = nn.Conv2d(in_d_co_domain+dim_grid, d_co_domain, 1, padding=0)
 
         #self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
@@ -426,6 +434,8 @@ class UNO(nn.Module):
         
         bsize = x.size(0)
         grid = self.get_grid(x.shape, x.device)
+        grid = self.embedder(grid)
+        
         # print('time_size',self.time(sigma).view(1,self.s, self.s,1).size())
         #time_embed = self.time(sigma).view(1,self.s, self.s,1).repeat(bsize,1,1,1)
 
