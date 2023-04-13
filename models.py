@@ -13,89 +13,6 @@ import math
 # from neuralop.models.tfno import FactorizedFNO1d, FactorizedFNO2d
 from time_embedding import TimestepEmbedding
 
-class FNO(nn.Module):
-    def __init__(self, s=64, modes=32, width=64, embed_dim=512):
-        super().__init__()
-
-        self.fno = FactorizedFNO1d(in_channels=3, width=width, modes_height=modes, factorization=None)
-        self.time = TimestepEmbedding(embed_dim, s, s)
-
-        pos_embed = torch.linspace(0, 1, s+1)[0:-1].view(1,1,-1)
-        self.register_buffer('pos_embed', pos_embed)
-    
-    def forward(self, x, sigma):
-        bsize = x.size(0)
-
-        x = x.unsqueeze(1)
-        time_embed = self.time(sigma).view(1,1,-1).repeat(bsize,1,1)
-        pos_embed = self.pos_embed.repeat(bsize,1,1)
-
-        x = torch.cat((x, pos_embed, time_embed), 1)
-
-
-        return self.fno(x).squeeze(1)
-
-class InterpModule(nn.Module):
-    def __init__(self, module, s):
-        super().__init__()
-
-        self.module = module
-        self.s = s
-    
-    def forward(self, x):
-        x = self.module(x).unsqueeze(1)
-
-        return F.interpolate(x, size=self.s, mode='linear')
-
-class InterpModel(nn.Module):
-    def __init__(self, model, s):
-        super().__init__()
-
-        self.model = model
-
-        pos_embed = torch.linspace(0, 1, s+1)[0:-1].view(1,1,-1)
-        self.model.pos_embed = pos_embed
-
-        self.old_time = copy.deepcopy(self.model.time)
-        self.model.time = InterpModule(self.old_time, s)
-    
-    def forward(self, x, sigma):
-        return self.model(x, sigma)
-
-
-class FNO2d(nn.Module):
-    def __init__(self, s=64, modes=32, width=64, out_channels = 1, in_channels = 1, embed_dim=512):
-        super().__init__()
-
-        self.s = s
-
-        self.fno = FactorizedFNO2d(in_channels=in_channels+3, out_channels=out_channels, width=width, modes_height=modes, modes_width=modes, factorization=None)
-        self.time = TimestepEmbedding(embed_dim, 2*s, s**2, pos_dim=1)
-
-        t = torch.linspace(0, 1, s+1)[0:-1]
-        X, Y = torch.meshgrid(t, t, indexing='ij') 
-
-        self.register_buffer('pos_embed_x', X)
-        self.register_buffer('pos_embed_y', Y)
-    
-    def forward(self, x, sigma):
-        bsize = x.size(0)
-
-       # x = x.unsqueeze(1)
-        x = torch.permute(x, (0, 3, 1, 2))
-        time_embed = self.time(sigma).view(1,1,self.s, self.s).repeat(bsize,1,1,1)
-        pos_embed_x = self.pos_embed_x.repeat(bsize,1,1,1)
-        pos_embed_y = self.pos_embed_y.repeat(bsize,1,1,1)
-
-        x = torch.cat((x, pos_embed_x, pos_embed_y, time_embed), 1)
-
-
-        return torch.permute(self.fno(x).squeeze(1),(0, 2, 3, 1))
-
-
-
-
-
 
 class SpectralConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, dim1, dim2, modes1 = None, modes2 = None, fmult=None):
@@ -224,13 +141,21 @@ class ResnetBlock(nn.Module):
         #self.res_conv = SpectralConv2d(in_channels, out_channels,
         #                               dim1, dim2,
         #                               fmult=fmult)
+        self.dim1 = dim1
+        self.dim2 = dim2
 
         self.mlp = nn.Sequential(
             nn.SiLU(), 
             nn.Linear(time_dim, out_channels * 2)
         )
         
-    def forward(self, x, time_emb):
+    def forward(self, x, time_emb, grid):
+
+        #print(x.shape, grid.shape, self.block1)
+
+        grid_ds = F.interpolate(grid, size=(x.size(-2), x.size(-1)))
+        x = torch.cat((x, grid_ds), dim=1)
+
         
         time_emb = self.mlp(time_emb)
         time_emb = rearrange(time_emb, "b c -> b c 1 1")
@@ -325,14 +250,14 @@ class UNO(nn.Module):
         )
 
         self.block1 = ResnetBlock(
-            self.d_co_domain, A[0]*self.d_co_domain, 
+            self.d_co_domain + dim_grid, A[0]*self.d_co_domain, 
             time_dim, 
             sdim, sdim,
             fmult
             #int(sdim*0.75*fmult), int(sdim*0.75*fmult)
         )
         self.block2 = ResnetBlock(
-            A[0]*self.d_co_domain, A[1]*self.d_co_domain, 
+            A[0]*self.d_co_domain + dim_grid, A[1]*self.d_co_domain, 
             time_dim, 
             int(sdim*0.75), int(sdim*0.75),
             fmult,
@@ -340,7 +265,7 @@ class UNO(nn.Module):
         )
                                   
         self.block3 = ResnetBlock(
-            A[1]*self.d_co_domain, A[2]*self.d_co_domain, 
+            A[1]*self.d_co_domain + dim_grid, A[2]*self.d_co_domain, 
             time_dim, 
             sdim//2, sdim//2,
             fmult,
@@ -348,7 +273,7 @@ class UNO(nn.Module):
         )
                                   
         self.block4 = ResnetBlock(
-            A[2]*self.d_co_domain, A[3]*self.d_co_domain, 
+            A[2]*self.d_co_domain + dim_grid, A[3]*self.d_co_domain, 
             time_dim,
             sdim//4, sdim//4,
             fmult,
@@ -357,7 +282,7 @@ class UNO(nn.Module):
                                   
         
         self.inv2_9 = ResnetBlock(
-            A[3] * self.d_co_domain, 
+            A[3] * self.d_co_domain + dim_grid, 
             A[2]*self.d_co_domain, 
             time_dim, 
             sdim//2, sdim//2,
@@ -366,7 +291,7 @@ class UNO(nn.Module):
         )
         # combine out channels of inv2_9 and block3
         self.inv3 = ResnetBlock(
-            (A[2]*2) * self.d_co_domain, 
+            (A[2]*2) * self.d_co_domain + dim_grid, 
             A[1]*self.d_co_domain, 
             time_dim, 
             int(sdim*0.75), int(sdim*0.75),
@@ -375,7 +300,7 @@ class UNO(nn.Module):
         )
         # combine out channels of inv3 and block2
         self.inv4 = ResnetBlock(
-            (A[1]*2) * self.d_co_domain, 
+            (A[1]*2) * self.d_co_domain + dim_grid, 
             A[0]*self.d_co_domain, 
             time_dim, 
             sdim, sdim,
@@ -385,7 +310,7 @@ class UNO(nn.Module):
         
         # combine out channels of inv4 and block1
         self.inv5 = ResnetBlock(
-            (A[0]*2) * self.d_co_domain, 
+            (A[0]*2) * self.d_co_domain + dim_grid, 
             self.d_co_domain, 
             time_dim,
             sdim, sdim,
@@ -446,27 +371,29 @@ class UNO(nn.Module):
         x_fc0 = x.permute(0, 3, 1, 2)
         x_fc0 = self.init_conv(x_fc0)
 
+        grid = grid.permute(0,3,1,2)
+
         #x_fc0 = self.fc0(x)
         #x_fc0 = F.gelu(x_fc0)
         x_fc0 = F.pad(x_fc0, [0,self.padding, 0,self.padding])
         
-        x_c0 = self.block1(x_fc0, t_emb)
-        x_c1 = self.block2(x_c0, t_emb)
-        x_c2 = self.block3(x_c1, t_emb)
-        x_c2_1 = self.block4(x_c2, t_emb)
+        x_c0 = self.block1(x_fc0, t_emb, grid)
+        x_c1 = self.block2(x_c0, t_emb, grid)
+        x_c2 = self.block3(x_c1, t_emb, grid)
+        x_c2_1 = self.block4(x_c2, t_emb, grid)
         
-        x_c2_9 = self.inv2_9(x_c2_1, t_emb)
+        x_c2_9 = self.inv2_9(x_c2_1, t_emb, grid)
         x_c2_9 = torch.cat((x_c2_9, x_c2), dim=1)
 
         #print("-----------")
 
-        x_c3 = self.inv3(x_c2_9, t_emb)
+        x_c3 = self.inv3(x_c2_9, t_emb, grid)
         x_c3 = torch.cat((x_c3, x_c1), dim=1)
 
-        x_c4 = self.inv4(x_c3, t_emb)
+        x_c4 = self.inv4(x_c3, t_emb, grid)
         x_c4 = torch.cat((x_c4, x_c0), dim=1)
 
-        x_c5 = self.inv5(x_c4, t_emb)
+        x_c5 = self.inv5(x_c4, t_emb, grid)
         x_c5 = torch.cat((x_c5, x_fc0), dim=1)
         
         #x_c6 = self.post(x_c5, t_emb)

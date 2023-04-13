@@ -9,12 +9,15 @@ from utils import (DotDict,
                    circular_skew, 
                    circular_var, 
                    plot_samples, 
-                   plot_noised_samples, 
+                   plot_samples_grid, 
                    min_max_norm, 
                    format_tuple,
                    rescale)
 
 from train import init_model, sample
+
+from setup_logger import get_logger
+logger = get_logger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="")
@@ -23,6 +26,7 @@ def parse_args():
                         help="Full path of the experiment: <savedir>/<group>/<id>")
     parser.add_argument("--savedir", type=str, required=True,
                         help="dump stats here")
+    parser.add_argument("--checkpoint", type=str, default="model.pt")
     parser.add_argument("--mode", type=str, 
                         choices=['generate', 'plot'],
                         default='generate',
@@ -52,21 +56,22 @@ if __name__ == '__main__':
 
     print(json.dumps(cfg, indent=4))
 
-    fno, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
-        init_model(cfg)
+    fno, ema_helper, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
+        init_model(cfg, args.checkpoint)
 
     if args.mode == 'generate':
 
         # Generate samples and dump them out to <savedir>/samples.pkl.
 
-        u, fn_outs = sample(
-            fno, init_sampler, noise_sampler, sigma, 
-            bs=args.val_batch_size, n_examples=args.Ntest, T=cfg.T,
-            epsilon=cfg.epsilon,
-            fns={"skew": circular_skew, "var": circular_var}
-        )
-        skew_generated = fn_outs['skew']
-        var_generated = fn_outs['var']
+        with ema_helper:
+            u, fn_outs = sample(
+                fno, init_sampler, noise_sampler, sigma, 
+                bs=args.val_batch_size, n_examples=args.Ntest, T=cfg.T,
+                epsilon=cfg.epsilon,
+                fns={"skew": circular_skew, "var": circular_var}
+            )
+            skew_generated = fn_outs['skew']
+            var_generated = fn_outs['var']
 
         # samples.pkl contains everything
         torch.save((u.cpu(), skew_generated, var_generated),
@@ -84,8 +89,13 @@ if __name__ == '__main__':
             os.path.join(args.savedir, "samples.pkl")
         )
 
-        plot_noised_samples(
-            samples[0:16],
+        logger.info("samples min-max: {}, {}".format(samples.min(), samples.max()))
+        #print("skew min-max: {}, {}".format(skew.min(), skew.max()))
+        #print("var min-max: {}, {}".format(skew.min(), skew.max()))
+
+        plot_samples_grid(
+            # TODO
+            torch.clamp(samples[0:16], -1, 1),
             outfile=os.path.join(
                 args.savedir, 
                 "samples.png"
@@ -97,7 +107,7 @@ if __name__ == '__main__':
         x_train = train_dataset.dataset.x_train
         mean_train_set = x_train.mean(dim=0, keepdim=True)
         
-        mean_sample_set = samples.mean(dim=0, keepdim=True).detach().cpu()
+        mean_sample_set = torch.clamp(samples, -1, 1).mean(dim=0, keepdim=True).detach().cpu()
         print("min max of mean train set: {:.3f}, {:.3f}".format(
             mean_train_set.min(), mean_train_set.max()
         ))
@@ -115,7 +125,8 @@ if __name__ == '__main__':
                 format_tuple(mean_train_set.min().item(), mean_train_set.max().item()),
                 format_tuple(mean_sample_set.min().item(), mean_sample_set.max().item())
             ],
-            outfile=os.path.join(args.savedir, "mean_sample.png")
+            outfile=os.path.join(args.savedir, "mean_sample.png"),
+            figsize=(8,4)
         )
 
         #import pdb; pdb.set_trace()
