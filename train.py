@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset, Dataset, Subset
 from torchvision.utils import save_image
 from torchvision import transforms
@@ -31,8 +32,7 @@ from utils import (
 )
 from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct, IndependentGaussian
 
-# from models import FNO2d, UNO
-from models import UNO
+from models import Generator, Discriminator
 
 import numpy as np
 
@@ -74,12 +74,6 @@ def parse_args():
     parser.add_argument("--savedir", required=True, type=str)
     # Samplers and prior distribution
     parser.add_argument(
-        "--L", type=int, default=10, help="Number of noise scales (timesteps)"
-    )
-    parser.add_argument(
-        "--schedule", type=str, default="geometric", choices=["geometric", "linear"]
-    )
-    parser.add_argument(
         "--white_noise",
         action="store_true",
         help="If set, use independent Gaussian noise instead",
@@ -87,14 +81,9 @@ def parse_args():
     parser.add_argument(
         "--augment", action="store_true", help="If set, use data augmentation"
     )
-    parser.add_argument("--sigma_1", type=float, default=1.0)
-    parser.add_argument("--sigma_L", type=float, default=0.01)
-    parser.add_argument(
-        "--epsilon",
-        type=float,
-        default=2e-5,
-        help="Learning rate in the SGLD sampling algorithm",
-    )
+    parser.add_argument("--n_critic", type=int, default=10,
+                        help="Number of D iterations per G")
+    parser.add_argument("--lambda_grad", type=float, default=10., help="grad penalty")
     parser.add_argument(
         "--tau",
         type=float,
@@ -108,42 +97,10 @@ def parse_args():
         "--sigma_x0", type=float, default=1.0, help="Variance of the prior distribution"
     )
     parser.add_argument(
-        "--T",
-        type=int,
-        default=100,
-        help="The T parameter for annealed SGLD (how many iters per sigma)",
-    )
-    # U-NO architecture specific
-    parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
-    parser.add_argument(
-        "--num_freqs_input",
-        type=int,
-        default=0,
-        help="How many frequencies do we use for Fourier features for the input (x,y) "
-        + "grid? (Not to be confused with fmult, which pertains to the Fourier convs.)",
-    )
-    parser.add_argument(
-        "--factorization", choices=[None, "tucker", "cp", "tt"], default=None
-    )
-    parser.add_argument("--rank", type=float, default=1.0)
-    parser.add_argument(
-        "--fmult",
-        type=float,
-        default=0.25,
-        help="Multiplier for the number of Fourier modes per convolution."
-        + "The number of modes will be set to int(dim/2 * fmult)",
-    )
-    parser.add_argument(
         "--d_co_domain",
         type=int,
         default=32,
         help="Is this analogous to `dim` for a regular U-Net?",
-    )
-    parser.add_argument(
-        "--groups",
-        type=int,
-        default=0,
-        help="Number of groups for group norm. If 0, no norm will be used."
     )
     parser.add_argument("--npad", type=int, default=8)
     # Optimisation
@@ -170,7 +127,7 @@ def parse_args():
 
 @torch.no_grad()
 def sample(
-    fno, init_sampler, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+    g, noise_sampler, n_examples, bs, fns=None
 ):
     buf = []
     if fns is not None:
@@ -181,17 +138,8 @@ def sample(
     print(n_batches, n_examples, bs, "<<<")
 
     for _ in range(n_batches):
-        u = init_sampler.sample(bs)
-        res = u.size(1)
-        u = sample_trace(
-            fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
-        )  # (bs, res, res, 2)
-        u = u.view(bs, -1)  # (bs, res*res*2)
-        u = u[~torch.any(u.isnan(), dim=1)]
-        # try:
-        u = u.view(-1, res, res, 2)  # (bs, res, res, 2)
-        # except:
-        #    continue
+        z = noise_sampler.sample(bs)
+        u = g(z)
         if fns is not None:
             for fn_name, fn_apply in fns.items():
                 fn_outputs[fn_name].append(fn_apply(u).cpu())
@@ -202,14 +150,13 @@ def sample(
         fn_outputs = {
             k: torch.cat(v, dim=0)[0:n_examples] for k, v in fn_outputs.items()
         }
-    if len(buf) != n_examples:
-        print(
-            "WARNING: some NaNs were in the generated samples, there were only "
-            + "{} / {} valid samples generated".format(len(buf), n_examples)
-        )
+    #if len(buf) != n_examples:
+    #    print(
+    #        "WARNING: some NaNs were in the generated samples, there were only "
+    #        + "{} / {} valid samples generated".format(len(buf), n_examples)
+    #    )
     # assert len(buf) == n_examples
     return buf, fn_outputs
-
 
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
@@ -239,6 +186,29 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     term2 = noise / this_sigmas
     loss = ((term1 + term2) ** 2).mean()
     return loss
+
+def calculate_gradient_penalty(model, real_images, fake_images, device, res):
+    """Calculates the gradient penalty loss for GAN"""
+    # Random weight term for interpolation between real and fake data
+    alpha = torch.randn((real_images.size(0), 1, 1, 1), device=device)
+    # Get random interpolation between real and fake data
+    interpolates = (alpha * real_images + ((1 - alpha) * fake_images)).requires_grad_(True)
+
+    model_interpolates = model(interpolates)
+    grad_outputs = torch.ones(model_interpolates.size(), device=device, requires_grad=False)
+
+    # Get gradient w.r.t. interpolates
+    gradients = torch.autograd.grad(
+        outputs=model_interpolates,
+        inputs=interpolates,
+        grad_outputs=grad_outputs,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    gradients = gradients.reshape(gradients.size(0), -1)
+    gradient_penalty = torch.mean((gradients.norm(2, dim=1) - 1.0/res) ** 2)
+    return gradient_penalty
 
 
 def init_model(args, checkpoint="model.pt"):
@@ -278,27 +248,18 @@ def init_model(args, checkpoint="model.pt"):
     )
 
     # Initialise the model
-    s = 128 - 8
-    fno = UNO(
-        2,
-        args.d_co_domain,
-        s=s,
-        pad=args.npad,
-        fmult=args.fmult,
-        groups=args.groups,
-        factorization=args.factorization,
-        rank=args.rank,
-        num_freqs_input=args.num_freqs_input,
-        mult_dims=args.mult_dims,
-    ).to(device)
-    # (fno)
-    logger.info("# of trainable parameters: {}".format(count_params(fno)))
-    fno = fno.to(device)
+    D = Discriminator(2+2, args.d_co_domain, pad=args.npad).to(device)
+    # TODO: why was it 2+1 to begin with???
+    G = Generator(2+2, args.d_co_domain, pad=args.npad).to(device)
+    nn_params = sum(p.numel() for p in D.parameters() if p.requires_grad)
+    logger.info("Number discriminator parameters: {}".format(nn_params))
+    nn_params = sum(p.numel() for p in G.parameters() if p.requires_grad)
+    logger.info("Number generator parameters: {}".format(nn_params))
 
     ema_helper = None
     if args.ema_rate is not None:
         ema_helper = EMAHelper(mu=args.ema_rate)
-        ema_helper.register(fno)
+        ema_helper.register(G)
 
     # Load checkpoint here if it exists.
     start_epoch = 0
@@ -314,7 +275,8 @@ def init_model(args, checkpoint="model.pt"):
             )
         )
         logger.debug("keys in chkpt: {}".format(chkpt.keys()))
-        fno.load_state_dict(chkpt["weights"])
+        G.load_state_dict(chkpt["g"])
+        D.load_state_dict(chkpt["d"])
         logger.info("metrics found in chkpt: {}".format(chkpt["metrics"]))
         if ema_helper is not None and "ema_helper" in chkpt:
             logger.info("EMA enabled, loading EMA weights...")
@@ -323,46 +285,25 @@ def init_model(args, checkpoint="model.pt"):
         if checkpoint != "model.pt":
             raise Exception("Cannot find checkpoint: {}".format(checkpoint))
 
+    s = 128 - args.npad
     # Initialise samplers.
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
         logger.warning("Using independent Gaussian noise, NOT grf noise...")
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
-        init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
         noise_sampler = GaussianRF_idct(
             s, s, alpha=args.alpha, tau=args.tau, sigma=1.0, device=device
         )
-        init_sampler = GaussianRF_idct(
-            s, s, alpha=args.alpha, tau=args.tau, sigma=args.sigma_x0, device=device
-        )
-
-    if args.sigma_1 < args.sigma_L:
-        raise ValueError(
-            "sigma_1 < sigma_L, whereas sigmas should be monotonically "
-            + "decreasing. You probably need to switch these two arguments around."
-        )
-
-    if args.schedule == "geometric":
-        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
-    elif args.schedule == "linear":
-        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
-    else:
-        raise ValueError("Unknown schedule: {}".format(args.schedule))
-
-    logger.info(
-        "sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
-            sigma[0], sigma[-1], args.L
-        )
-    )
 
     # TODO: this needs to be cleaned up badly
     return (
-        fno,
+        G,
+        D,
         ema_helper,
         start_epoch,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        noise_sampler,
     )
 
 
@@ -389,16 +330,13 @@ def run(args):
 
     # TODO: clean up
     (
-        fno,
+        G, D,
         ema_helper,
         start_epoch,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        noise_sampler,
     ) = init_model(args)
-
-    # with ema_helper:
-    #    print("test")
-
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -412,18 +350,6 @@ def run(args):
         num_workers=args.num_workers,
     )
 
-    init_samples = init_sampler.sample(5).cpu()
-    for ext in ["png", "pdf"]:
-        plot_noise(
-            init_samples,
-            os.path.join(
-                savedir,
-                "noise",
-                "init_samples_tau{}_alpha{}_sigma{}.{}".format(
-                    args.tau, args.alpha, args.sigma_1, ext
-                ),
-            ),
-        )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ["png", "pdf"]:
         plot_noise(
@@ -447,8 +373,9 @@ def run(args):
     with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
-    optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr, foreach=True)
-    print(optimizer)
+    G_optim = torch.optim.Adam(G.parameters(), lr=args.lr, foreach=True) #, weight_decay=1e-4)
+    D_optim = torch.optim.Adam(D.parameters(), lr=args.lr, foreach=True) #, weight_decay=1e-4)
+    fn_loss = nn.BCEWithLogitsLoss()
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     metric_trackers = {
@@ -460,27 +387,58 @@ def run(args):
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
-        fno.train()
+        G.train()
+        D.train()
+        
         pbar = tqdm(
             total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()
         for iter_, u in enumerate(train_loader):
-            optimizer.zero_grad()
+            G_optim.zero_grad()
+            D_optim.zero_grad()
 
             u = u.to(device)
 
-            # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            loss = score_matching_loss(fno, u, sigma, noise_sampler)
+            # Update D loss
+            u_fake = G(noise_sampler.sample(u.size(0)))
+            W_loss = -torch.mean(D(u)) + torch.mean(D(u_fake.detach()))
+            grad_penalty = calculate_gradient_penalty(
+                D, u.data, u_fake.data, device,
+                res=u.size(-1)-args.npad
+            ) 
+            loss_D = W_loss + args.lambda_grad*grad_penalty
+            loss_D.backward()
+            D_optim.step()
 
-            loss.backward()
-            optimizer.step()
+            if iter_ == 0:
+                logger.debug("u min and max: {}, {}".format(u.min(), u.max()))
+                logger.debug("u_fake min and max: {}, {}".format(u_fake.min(), u_fake.max()))
+
+            metrics = dict(loss_D=loss_D.item(),
+                           loss_W=W_loss.item(),
+                           loss_gp=grad_penalty.item())
+
+            if (iter_ + 1) % args.n_critic == 0:
+                G_optim.zero_grad()
+                D_optim.zero_grad()
+
+                u_fake_g = G(noise_sampler.sample(u.size(0)))
+
+                loss_G = -torch.mean(D(u_fake_g))
+                loss_G.backward()
+                G_optim.step()
+
+                metrics['loss_G'] = loss_G.item()
+
+                #print("yes")
+
             pbar.update(1)
 
             if ema_helper is not None:
-                ema_helper.update(fno)
+                ema_helper.update(G)
 
-            metrics = dict(loss=loss.item())
+
             if iter_ % 10 == 0:
                 pbar.set_postfix(metrics)
 
@@ -490,59 +448,21 @@ def run(args):
                     buf[k] = []
                 buf[k].append(v)
 
-            # if iter_ == 10: # TODO add debug flag
+            #if iter_ == 10: # TODO add debug flag
             #    break
-
-            if iter_ == 0 and ep == 0:
-                with torch.no_grad():
-                    idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
-                    this_sigmas = sigma[idcs]
-                    noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
-                    # print("noise magnitudes: min={}, max={}".format(noise.min(),
-                    #                                                noise.max()))
-
-                    logger.info(os.path.join(savedir, "u_noised.png"))
-                    plot_samples_grid(
-                        # Use the same example, and make a 4x4 grid of points
-                        u[0:1].repeat(16, 1, 1, 1) + noise,
-                        outfile=os.path.join(savedir, "u_noised.png"),
-                        subtitles=[
-                            "u + {:.3f}*z".format(x) for x in this_sigmas.cpu().numpy()
-                        ],
-                        figsize=(8, 8),
-                    )
-
-                    logger.info(os.path.join(savedir, "u_prior.png"))
-                    plot_samples_grid(
-                        # Use the same example, and make a 4x4 grid of points
-                        init_sampler.sample(16),
-                        outfile=os.path.join(savedir, "u_prior.png"),
-                        figsize=(8, 8),
-                    )
-
-                    x_train = train_dataset.dataset.x_train
-                    mean_samples = []
-                    for _ in range(16):
-                        perm = torch.randperm(len(x_train))[0:2048]
-                        mean_samples.append(x_train[perm].mean(dim=0, keepdims=True))
-                    mean_samples = torch.cat(mean_samples, dim=0)
-                    logger.info(os.path.join(savedir, "mean_subsamples.png"))
-                    plot_samples_grid(
-                        mean_samples,
-                        outfile=os.path.join(savedir, "mean_subsamples.png"),
-                        figsize=(8, 8),
-                        title="mean images over training set (size 2048 subsamples)",
-                    )
 
         pbar.close()
 
-        fno.eval()
+        G.eval()
+        D.eval()
         buf_valid = dict(loss_valid=[])
+        """
         for iter_, u in enumerate(valid_loader):
             u = u.to(device)
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
             # Update total statistics
             buf_valid["loss_valid"].append(loss.item())
+        """
 
         # scheduler.step()
 
@@ -553,14 +473,10 @@ def run(args):
             with ema_helper:
                 # This context mgr automatically applies EMA
                 u, fn_outs = sample(
-                    fno,
-                    init_sampler,
+                    G,
                     noise_sampler,
-                    sigma,
                     bs=args.val_batch_size,
                     n_examples=args.Ntest,
-                    T=args.T,
-                    epsilon=args.epsilon,
                     fns={"skew": circular_skew, "var": circular_var},
                 )
                 skew_generated = fn_outs["skew"]
@@ -618,7 +534,8 @@ def run(args):
                     # TODO: refactor
                     torch.save(
                         dict(
-                            weights=fno.state_dict(),
+                            g=G.state_dict(),
+                            d=D.state_dict(),
                             metrics={
                                 k: v.state_dict() for k, v in metric_trackers.items()
                             },
@@ -641,7 +558,8 @@ def run(args):
         buf = {k: np.mean(v) for k, v in buf.items()}
         buf.update({k: np.mean(v) for k, v in buf_valid.items()})
         buf["epoch"] = ep
-        buf["lr"] = optimizer.state_dict()["param_groups"][0]["lr"]
+        buf["lr_g"] = G_optim.state_dict()["param_groups"][0]["lr"]
+        buf["lr_d"] = D_optim.state_dict()["param_groups"][0]["lr"]        
         buf["time"] = default_timer() - t1
         # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         if recorded:
@@ -656,7 +574,8 @@ def run(args):
         # TODO: refactor
         torch.save(
             dict(
-                weights=fno.state_dict(),
+                g=G.state_dict(),
+                d=D.state_dict(),
                 metrics={k: v.state_dict() for k, v in metric_trackers.items()},
                 ema_helper=ema_helper.state_dict(),
                 last_epoch=ep,
