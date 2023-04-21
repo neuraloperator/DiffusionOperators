@@ -74,11 +74,13 @@ if __name__ == '__main__':
             var_generated = fn_outs['var']
 
         # samples.pkl contains everything
-        torch.save((u.cpu(), skew_generated, var_generated),
-                   os.path.join(args.savedir, "samples.pkl"))
+        torch.save(
+            (u.cpu(), skew_generated, var_generated),
+            os.path.join(args.savedir, "samples.{}.pkl".format(args.checkpoint))
+        )
 
         # stats.pkl just contains skew and variance
-        with open(os.path.join(args.savedir, "stats.pkl"), "wb") as f:
+        with open(os.path.join(args.savedir, "stats.{}.pkl".format(args.checkpoint)), "wb") as f:
             pickle.dump(
                 dict(var=var_generated, skew=skew_generated), f
             )
@@ -86,7 +88,7 @@ if __name__ == '__main__':
     elif args.mode == 'plot':
 
         samples, skew_generated, var_generated = torch.load(
-            os.path.join(args.savedir, "samples.pkl")
+            os.path.join(args.savedir, "samples.{}.pkl".format(args.checkpoint))
         )
 
         logger.info("samples min-max: {}, {}".format(samples.min(), samples.max()))
@@ -98,7 +100,7 @@ if __name__ == '__main__':
             torch.clamp(samples[0:16], -1, 1),
             outfile=os.path.join(
                 args.savedir, 
-                "samples.png"
+                "samples.{}.png".format(args.checkpoint)
             ),
             figsize=(8,8)
             #title=str(dict(epoch=ep+1, var=best_var))
@@ -125,7 +127,7 @@ if __name__ == '__main__':
                 format_tuple(mean_train_set.min().item(), mean_train_set.max().item()),
                 format_tuple(mean_sample_set.min().item(), mean_sample_set.max().item())
             ],
-            outfile=os.path.join(args.savedir, "mean_sample.png"),
+            outfile=os.path.join(args.savedir, "mean_sample.{}.png".format(args.checkpoint)),
             figsize=(8,4)
         )
 

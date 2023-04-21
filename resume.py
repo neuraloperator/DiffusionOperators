@@ -1,7 +1,7 @@
 import json
 import sys
 import os
-from Volcano_train import run
+from train import run
 from utils import DotDict
 
 if __name__ == '__main__':

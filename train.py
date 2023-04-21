@@ -4,7 +4,7 @@ from torchvision.utils import save_image
 from torchvision import transforms
 import random
 import math
-import os 
+import os
 import argparse
 import json
 import pickle
@@ -17,104 +17,164 @@ from datasets import VolcanoDataset
 
 from ema import EMAHelper
 
-from utils import (sigma_sequence, 
-                   avg_spectrum, 
-                   sample_trace, 
-                   sample_trace_jit,
-                   DotDict, 
-                   circular_skew,
-                   circular_var,
-                   plot_noise,
-                   plot_samples_grid,
-                   plot_samples)
-from random_fields_2d import (PeriodicGaussianRF2d, 
-                              GaussianRF_idct, 
-                              IndependentGaussian)
+from utils import (
+    sigma_sequence,
+    avg_spectrum,
+    sample_trace,
+    sample_trace_jit,
+    DotDict,
+    circular_skew,
+    circular_var,
+    plot_noise,
+    plot_samples_grid,
+    plot_samples,
+)
+from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct, IndependentGaussian
+
 # from models import FNO2d, UNO
 from models import UNO
 
 import numpy as np
-#import scipy.io
+
+# import scipy.io
 
 from tqdm import tqdm
 
 from setup_logger import get_logger
+
 logger = get_logger(__name__)
 
-device = torch.device('cuda:0')
+device = torch.device("cuda:0")
+
 
 def count_params(model):
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     return params
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="")
-    #parser.add_argument('--datadir', type=str, default="")
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument("--val_batch_size", type=int, default=512,
-                        help="Batch size used for generating samples at inference time")
+    # parser.add_argument('--datadir', type=str, default="")
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument(
+        "--val_batch_size",
+        type=int,
+        default=512,
+        help="Batch size used for generating samples at inference time",
+    )
     parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--val_size", type=float, default=0.1,
-                        help="Size of the validation set (as a float in [0,1])")
+    parser.add_argument(
+        "--val_size",
+        type=float,
+        default=0.1,
+        help="Size of the validation set (as a float in [0,1])",
+    )
     parser.add_argument("--record_interval", type=int, default=100)
     parser.add_argument("--savedir", required=True, type=str)
     # Samplers and prior distribution
-    parser.add_argument("--L", type=int, default=10,
-                        help="Number of noise scales (timesteps)")
-    parser.add_argument("--schedule", type=str, default="geometric",
-                        choices=["geometric", "linear"])
-    parser.add_argument("--white_noise", action='store_true',
-                        help="If set, use independent Gaussian noise instead")
-    parser.add_argument("--augment", action='store_true',
-                        help="If set, use data augmentation")
+    parser.add_argument(
+        "--L", type=int, default=10, help="Number of noise scales (timesteps)"
+    )
+    parser.add_argument(
+        "--schedule", type=str, default="geometric", choices=["geometric", "linear"]
+    )
+    parser.add_argument(
+        "--white_noise",
+        action="store_true",
+        help="If set, use independent Gaussian noise instead",
+    )
+    parser.add_argument(
+        "--augment", action="store_true", help="If set, use data augmentation"
+    )
     parser.add_argument("--sigma_1", type=float, default=1.0)
     parser.add_argument("--sigma_L", type=float, default=0.01)
-    parser.add_argument("--epsilon", type=float, default=2e-5,
-                        help="Learning rate in the SGLD sampling algorithm")
-    parser.add_argument("--tau", type=float, default=1.0,
-                        help="Larger tau gives rougher (noisier) noise")
-    parser.add_argument("--alpha", type=float, default=1.5,
-                        help="Larger alpha gives smoother noise")
-    parser.add_argument("--sigma_x0", type=float, default=1.0,
-                        help="Variance of the prior distribution")
-    parser.add_argument("--T", type=int, default=100,
-                        help="The T parameter for annealed SGLD (how many iters per sigma)")
-    # U-Net specific
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=2e-5,
+        help="Learning rate in the SGLD sampling algorithm",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=1.0,
+        help="Larger tau gives rougher (noisier) noise",
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=1.5, help="Larger alpha gives smoother noise"
+    )
+    parser.add_argument(
+        "--sigma_x0", type=float, default=1.0, help="Variance of the prior distribution"
+    )
+    parser.add_argument(
+        "--T",
+        type=int,
+        default=100,
+        help="The T parameter for annealed SGLD (how many iters per sigma)",
+    )
+    # U-NO architecture specific
     parser.add_argument("--mult_dims", type=eval, default="[1,2,4,4]")
-    parser.add_argument("--num_freqs_input", type=int, default=0,
-                        help="How many frequencies do we use for Fourier features for the input (x,y) " + \
-                        "grid? (Not to be confused with fmult, which pertains to the Fourier convs.)")
-    parser.add_argument("--fmult", type=float, default=0.25,
-                        help="Multiplier for the number of Fourier modes per convolution." + \
-                            "The number of modes will be set to int(dim/2 * fmult)")
-    parser.add_argument("--d_co_domain", type=int, default=32,
-                        help="Is this analogous to `dim` for a regular U-Net?")
+    parser.add_argument(
+        "--num_freqs_input",
+        type=int,
+        default=0,
+        help="How many frequencies do we use for Fourier features for the input (x,y) "
+        + "grid? (Not to be confused with fmult, which pertains to the Fourier convs.)",
+    )
+    parser.add_argument(
+        "--factorization", choices=[None, "tucker", "cp", "tt"], default=None
+    )
+    parser.add_argument("--rank", type=float, default=1.0)
+    parser.add_argument(
+        "--fmult",
+        type=float,
+        default=0.25,
+        help="Multiplier for the number of Fourier modes per convolution."
+        + "The number of modes will be set to int(dim/2 * fmult)",
+    )
+    parser.add_argument(
+        "--d_co_domain",
+        type=int,
+        default=32,
+        help="Is this analogous to `dim` for a regular U-Net?",
+    )
+    parser.add_argument(
+        "--groups",
+        type=int,
+        default=0,
+        help="Number of groups for group norm. If 0, no norm will be used."
+    )
     parser.add_argument("--npad", type=int, default=8)
     # Optimisation
     parser.add_argument("--lr", type=float, default=1e-3)
     # Evaluation
-    parser.add_argument("--Ntest", type=int, default=1024,
-                        help="Number of examples to generate for validation " + \
-                            "(generating skew and variance metrics)")
+    parser.add_argument(
+        "--Ntest",
+        type=int,
+        default=1024,
+        help="Number of examples to generate for validation "
+        + "(generating skew and variance metrics)",
+    )
     # Misc
-    parser.add_argument("--num_workers", type=int, default=2,
-                        help="Number of workers for data loader")
+    parser.add_argument(
+        "--num_workers", type=int, default=2, help="Number of workers for data loader"
+    )
     parser.add_argument("--ema_rate", type=float, default=None)
     args = parser.parse_args()
     return args
 
-#Inport data
+
+# Inport data
 
 
 @torch.no_grad()
-def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
-           epsilon=2e-5, 
-           fns=None):
-
+def sample(
+    fno, init_sampler, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+):
     buf = []
     if fns is not None:
-        fn_outputs = {k:[] for k in fns.keys()}
+        fn_outputs = {k: [] for k in fns.keys()}
 
     n_batches = int(math.ceil(n_examples / bs))
 
@@ -123,12 +183,14 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     for _ in range(n_batches):
         u = init_sampler.sample(bs)
         res = u.size(1)
-        u = sample_trace(fno, noise_sampler, sigma, u, epsilon=epsilon, T=T) # (bs, res, res, 2)
-        u = u.view(bs,-1) # (bs, res*res*2)
-        u = u[~torch.any(u.isnan(),dim=1)]
-        #try:
-        u = u.view(-1,res,res,2) # (bs, res, res, 2)
-        #except:
+        u = sample_trace(
+            fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
+        )  # (bs, res, res, 2)
+        u = u.view(bs, -1)  # (bs, res*res*2)
+        u = u[~torch.any(u.isnan(), dim=1)]
+        # try:
+        u = u.view(-1, res, res, 2)  # (bs, res, res, 2)
+        # except:
         #    continue
         if fns is not None:
             for fn_name, fn_apply in fns.items():
@@ -137,12 +199,17 @@ def sample(fno, init_sampler, noise_sampler, sigma, n_examples, bs, T,
     buf = torch.cat(buf, dim=0)[0:n_examples]
     # Flatten each list in fn outputs
     if fns is not None:
-        fn_outputs = {k:torch.cat(v, dim=0)[0:n_examples] for k,v in fn_outputs.items()}
+        fn_outputs = {
+            k: torch.cat(v, dim=0)[0:n_examples] for k, v in fn_outputs.items()
+        }
     if len(buf) != n_examples:
-        print("WARNING: some NaNs were in the generated samples, there were only " + \
-            "{} / {} valid samples generated".format(len(buf), n_examples))
-    #assert len(buf) == n_examples
+        print(
+            "WARNING: some NaNs were in the generated samples, there were only "
+            + "{} / {} valid samples generated".format(len(buf), n_examples)
+        )
+    # assert len(buf) == n_examples
     return buf, fn_outputs
+
 
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
@@ -168,10 +235,11 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     noise = this_sigmas * noise_sampler.sample(bsize)
     # term1 = score_fn(x0+noise)
     u_noised = u + noise
-    term1 =  this_sigmas * fno(u_noised, idcs, this_sigmas)
-    term2 =  noise / this_sigmas
-    loss = ((term1+term2)**2).mean()
+    term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
+    term2 = noise / this_sigmas
+    loss = ((term1 + term2) ** 2).mean()
     return loss
+
 
 def init_model(args, checkpoint="model.pt"):
     """Return the model and datasets"""
@@ -187,10 +255,12 @@ def init_model(args, checkpoint="model.pt"):
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
     if args.augment:
-        transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5)
-        ])
+        transform = transforms.Compose(
+            [
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomVerticalFlip(p=0.5),
+            ]
+        )
     else:
         transform = None
     full_dataset = VolcanoDataset(root=datadir, transform=transform)
@@ -198,28 +268,30 @@ def init_model(args, checkpoint="model.pt"):
     dataset_idcs = np.arange(0, len(full_dataset))
     rnd_state.shuffle(dataset_idcs)
     train_dataset = Subset(
-        full_dataset, 
-        dataset_idcs[0 : int(len(dataset_idcs)*(1-args.val_size)) ]
+        full_dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
     )
     valid_dataset = Subset(
-        full_dataset, 
-        dataset_idcs[ int(len(dataset_idcs)*(1-args.val_size)) :: ]
+        full_dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
     )
-    logger.info("Len of train / valid: {} / {}".format(
-        len(train_dataset),
-        len(valid_dataset)
-    ))
+    logger.info(
+        "Len of train / valid: {} / {}".format(len(train_dataset), len(valid_dataset))
+    )
 
     # Initialise the model
     s = 128 - 8
-    fno = UNO(2,
-              args.d_co_domain, 
-              s = s, 
-              pad=args.npad, 
-              fmult=args.fmult, 
-              num_freqs_input=args.num_freqs_input,
-              mult_dims=args.mult_dims).to(device)
-    #(fno)
+    fno = UNO(
+        2,
+        args.d_co_domain,
+        s=s,
+        pad=args.npad,
+        fmult=args.fmult,
+        groups=args.groups,
+        factorization=args.factorization,
+        rank=args.rank,
+        num_freqs_input=args.num_freqs_input,
+        mult_dims=args.mult_dims,
+    ).to(device)
+    # (fno)
     logger.info("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
 
@@ -231,17 +303,22 @@ def init_model(args, checkpoint="model.pt"):
     # Load checkpoint here if it exists.
     start_epoch = 0
     if os.path.exists(os.path.join(savedir, checkpoint)):
-        logger.info("Found checkpoint {}, resuming from epoch {}".\
-            format(checkpoint, start_epoch))
         chkpt = torch.load(os.path.join(savedir, checkpoint))
-        fno.load_state_dict(chkpt['weights'])
-        logger.info("metrics found in chkpt: {}".format(chkpt['metrics']))
-        #print(chkpt['stats'].keys())
-        #start_epoch = len(chkpt['stats']['loss'])
-        start_epoch = 0 #BUG
-        if ema_helper is not None and 'ema_helper' in chkpt:
+        if "last_epoch" not in chkpt:
+            start_epoch = 1
+        else:
+            start_epoch = chkpt["last_epoch"] + 1
+        logger.info(
+            "Found checkpoint {}, resuming from epoch {}".format(
+                checkpoint, start_epoch
+            )
+        )
+        logger.debug("keys in chkpt: {}".format(chkpt.keys()))
+        fno.load_state_dict(chkpt["weights"])
+        logger.info("metrics found in chkpt: {}".format(chkpt["metrics"]))
+        if ema_helper is not None and "ema_helper" in chkpt:
             logger.info("EMA enabled, loading EMA weights...")
-            ema_helper.load_state_dict(chkpt['ema_helper'])
+            ema_helper.load_state_dict(chkpt["ema_helper"])
     else:
         if checkpoint != "model.pt":
             raise Exception("Cannot find checkpoint: {}".format(checkpoint))
@@ -253,108 +330,110 @@ def init_model(args, checkpoint="model.pt"):
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
         init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
-        noise_sampler = GaussianRF_idct(s, s,
-                                        alpha=args.alpha, 
-                                        tau=args.tau,
-                                        sigma = 1.0, 
-                                        device=device)
-        init_sampler = GaussianRF_idct(s, s, 
-                                    alpha=args.alpha, 
-                                    tau=args.tau, 
-                                    sigma = args.sigma_x0,
-                                    device=device)
+        noise_sampler = GaussianRF_idct(
+            s, s, alpha=args.alpha, tau=args.tau, sigma=1.0, device=device
+        )
+        init_sampler = GaussianRF_idct(
+            s, s, alpha=args.alpha, tau=args.tau, sigma=args.sigma_x0, device=device
+        )
 
     if args.sigma_1 < args.sigma_L:
-        raise ValueError("sigma_1 < sigma_L, whereas sigmas should be monotonically " + \
-            "decreasing. You probably need to switch these two arguments around.")
+        raise ValueError(
+            "sigma_1 < sigma_L, whereas sigmas should be monotonically "
+            + "decreasing. You probably need to switch these two arguments around."
+        )
 
-    if args.schedule == 'geometric':
+    if args.schedule == "geometric":
         sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
-    elif args.schedule == 'linear':
+    elif args.schedule == "linear":
         sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
     else:
         raise ValueError("Unknown schedule: {}".format(args.schedule))
-    
-    logger.info("sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
-        sigma[0],
-        sigma[-1],
-        args.L
-    ))
+
+    logger.info(
+        "sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
+            sigma[0], sigma[-1], args.L
+        )
+    )
 
     # TODO: this needs to be cleaned up badly
-    return fno, \
-        ema_helper, \
-        start_epoch, \
-        (train_dataset, valid_dataset), \
-        (init_sampler, noise_sampler, sigma)
+    return (
+        fno,
+        ema_helper,
+        start_epoch,
+        (train_dataset, valid_dataset),
+        (init_sampler, noise_sampler, sigma),
+    )
 
 
-class ValidationMetric():
+class ValidationMetric:
     def __init__(self):
         self.best = np.inf
+
     def update(self, x):
         """Return true if the metric is the best so far, else false"""
         if x < self.best:
             self.best = x
             return True
         return False
-    def state_dict(self):
-        return {'best': self.best}
-    def load_state_dict(self, dd):
-        self.best = dd['best']
- 
-def run(args):
 
+    def state_dict(self):
+        return {"best": self.best}
+
+    def load_state_dict(self, dd):
+        self.best = dd["best"]
+
+
+def run(args):
     savedir = args.savedir
 
     # TODO: clean up
-    fno, ema_helper, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
-        init_model(args)
+    (
+        fno,
+        ema_helper,
+        start_epoch,
+        (train_dataset, valid_dataset),
+        (init_sampler, noise_sampler, sigma),
+    ) = init_model(args)
 
-    #with ema_helper:
+    # with ema_helper:
     #    print("test")
-          
+
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        num_workers=args.num_workers)
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+    )
     valid_loader = DataLoader(
-        valid_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        num_workers=args.num_workers
+        valid_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
     )
 
     init_samples = init_sampler.sample(5).cpu()
-    for ext in ['png', 'pdf']:
+    for ext in ["png", "pdf"]:
         plot_noise(
-            init_samples, 
+            init_samples,
             os.path.join(
-                savedir, 
-                "noise", 
+                savedir,
+                "noise",
                 "init_samples_tau{}_alpha{}_sigma{}.{}".format(
-                    args.tau, 
-                    args.alpha,
-                    args.sigma_1, 
-                    ext
-                )
-            )
+                    args.tau, args.alpha, args.sigma_1, ext
+                ),
+            ),
         )
     noise_samples = noise_sampler.sample(5).cpu()
-    for ext in ['png', 'pdf']:
+    for ext in ["png", "pdf"]:
         plot_noise(
-            noise_samples, 
+            noise_samples,
             os.path.join(
-                savedir, 
-                "noise", 
+                savedir,
+                "noise",
                 # implicit that sigma here == 1.0
-                "noise_samples_tau{}_alpha{}.{}".format(
-                    args.tau, 
-                    args.alpha, 
-                    ext
-                )
-            )
+                "noise_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext),
+            ),
         )
 
     # Save config file
@@ -373,23 +452,25 @@ def run(args):
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     metric_trackers = {
-        'w_skew': ValidationMetric(), 
-        'w_var': ValidationMetric(),
-        "w_total": ValidationMetric()
+        "w_skew": ValidationMetric(),
+        "w_var": ValidationMetric(),
+        "w_total": ValidationMetric(),
     }
-    
+
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
         fno.train()
-        pbar = tqdm(total=len(train_loader), desc="Train {}/{}".format(ep+1, args.epochs))
+        pbar = tqdm(
+            total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
+        )
         buf = dict()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
 
             u = u.to(device)
 
-            #with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
             loss.backward()
@@ -398,44 +479,45 @@ def run(args):
 
             if ema_helper is not None:
                 ema_helper.update(fno)
-            
+
             metrics = dict(loss=loss.item())
             if iter_ % 10 == 0:
                 pbar.set_postfix(metrics)
 
             # Update total statistics
-            for k,v in metrics.items():
+            for k, v in metrics.items():
                 if k not in buf:
                     buf[k] = []
                 buf[k].append(v)
 
-            #if iter_ == 10: # TODO add debug flag
+            # if iter_ == 10: # TODO add debug flag
             #    break
 
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
-                    idcs = torch.linspace(0, len(sigma)-1, 16).long().to(u.device)
+                    idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
                     this_sigmas = sigma[idcs]
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
-                    #print("noise magnitudes: min={}, max={}".format(noise.min(),
+                    # print("noise magnitudes: min={}, max={}".format(noise.min(),
                     #                                                noise.max()))
 
-                    logger.info(os.path.join(savedir, "u_noised.png")) 
+                    logger.info(os.path.join(savedir, "u_noised.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
-                        u[0:1].repeat(16, 1, 1, 1) + noise, 
-                        outfile=os.path.join(savedir, "u_noised.png"), 
-                        subtitles=[ "u + {:.3f}*z".format(x) for x in \
-                            this_sigmas.cpu().numpy() ],
-                        figsize=(8,8)
+                        u[0:1].repeat(16, 1, 1, 1) + noise,
+                        outfile=os.path.join(savedir, "u_noised.png"),
+                        subtitles=[
+                            "u + {:.3f}*z".format(x) for x in this_sigmas.cpu().numpy()
+                        ],
+                        figsize=(8, 8),
                     )
 
                     logger.info(os.path.join(savedir, "u_prior.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
                         init_sampler.sample(16),
-                        outfile=os.path.join(savedir, "u_prior.png"), 
-                        figsize=(8,8)
+                        outfile=os.path.join(savedir, "u_prior.png"),
+                        figsize=(8, 8),
                     )
 
                     x_train = train_dataset.dataset.x_train
@@ -444,14 +526,13 @@ def run(args):
                         perm = torch.randperm(len(x_train))[0:2048]
                         mean_samples.append(x_train[perm].mean(dim=0, keepdims=True))
                     mean_samples = torch.cat(mean_samples, dim=0)
-                    logger.info(os.path.join(savedir, "mean_subsamples.png"))                     
+                    logger.info(os.path.join(savedir, "mean_subsamples.png"))
                     plot_samples_grid(
                         mean_samples,
                         outfile=os.path.join(savedir, "mean_subsamples.png"),
-                        figsize=(8,8),
-                        title="mean images over training set (size 2048 subsamples)"
+                        figsize=(8, 8),
+                        title="mean images over training set (size 2048 subsamples)",
                     )
-                    
 
         pbar.close()
 
@@ -459,11 +540,11 @@ def run(args):
         buf_valid = dict(loss_valid=[])
         for iter_, u in enumerate(valid_loader):
             u = u.to(device)
-            loss  = score_matching_loss(fno, u, sigma, noise_sampler)
+            loss = score_matching_loss(fno, u, sigma, noise_sampler)
             # Update total statistics
             buf_valid["loss_valid"].append(loss.item())
-   
-        #scheduler.step()
+
+        # scheduler.step()
 
         recorded = False
         if (ep + 1) % args.record_interval == 0:
@@ -472,83 +553,97 @@ def run(args):
             with ema_helper:
                 # This context mgr automatically applies EMA
                 u, fn_outs = sample(
-                    fno, init_sampler, noise_sampler, sigma, 
-                    bs=args.val_batch_size, n_examples=args.Ntest, T=args.T,
+                    fno,
+                    init_sampler,
+                    noise_sampler,
+                    sigma,
+                    bs=args.val_batch_size,
+                    n_examples=args.Ntest,
+                    T=args.T,
                     epsilon=args.epsilon,
-                    fns={"skew": circular_skew, "var": circular_var}
+                    fns={"skew": circular_skew, "var": circular_var},
                 )
-                skew_generated = fn_outs['skew']
-                var_generated = fn_outs['var']
+                skew_generated = fn_outs["skew"]
+                var_generated = fn_outs["var"]
 
             # Dump this out to disk as well.
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
-            metric_vals = {"w_skew": w_skew,
-                           "w_var": w_var,
-                           "w_total": w_total}
+            metric_vals = {"w_skew": w_skew, "w_var": w_var, "w_total": w_total}
 
-            for ext in ['pdf', 'png']:
+            for ext in ["pdf", "png"]:
                 plot_samples(
-                    u[0:5], 
+                    u[0:5],
                     outfile=os.path.join(
-                        savedir, 
-                        "samples",
-                        "{}.{}".format(ep+1, ext)
-                    )
+                        savedir, "samples", "{}.{}".format(ep + 1, ext)
+                    ),
                 )
 
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.
-            mean_samples = torch.cat(( 
-                train_dataset.dataset.x_train.mean(dim=0, keepdim=True), 
-                u.mean(dim=0, keepdim=True).detach().cpu()
-            ), dim=0)
+            mean_samples = torch.cat(
+                (
+                    train_dataset.dataset.x_train.mean(dim=0, keepdim=True),
+                    u.mean(dim=0, keepdim=True).detach().cpu(),
+                ),
+                dim=0,
+            )
             plot_samples(
                 mean_samples,  # of shape (2, res, res, 2)
-                outfile=os.path.join(savedir, "samples", "mean_sample_{}.png".format(ep+1))
+                outfile=os.path.join(
+                    savedir, "samples", "mean_sample_{}.png".format(ep + 1)
+                ),
             )
-                                                        
+
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
                 if metric_trackers[metric_key].update(metric_val):
-                    print("new best metric for {}: {:.3f}".format(metric_key, metric_val))
-                    for ext in ['pdf', 'png']:
+                    print(
+                        "new best metric for {}: {:.3f}".format(metric_key, metric_val)
+                    )
+                    for ext in ["pdf", "png"]:
                         plot_samples(
-                            u[0:5], 
+                            u[0:5],
                             outfile=os.path.join(
-                                savedir, 
-                                "samples",
-                                "best_{}.{}".format(metric_key, ext)
-                            ),                        
+                                savedir, "samples", "best_{}.{}".format(metric_key, ext)
+                            ),
                             title=str(
-                                {'epoch':ep+1, metric_key: "{:.3f}".format(metric_val)}
-                            )
+                                {
+                                    "epoch": ep + 1,
+                                    metric_key: "{:.3f}".format(metric_val),
+                                }
+                            ),
                         )
                     # TODO: refactor
                     torch.save(
                         dict(
                             weights=fno.state_dict(),
-                            metrics={k:v.state_dict() for k,v in metric_trackers.items()},
-                            ema_helper=ema_helper.state_dict()
+                            metrics={
+                                k: v.state_dict() for k, v in metric_trackers.items()
+                            },
+                            ema_helper=ema_helper.state_dict(),
+                            last_epoch=ep,
                         ),
-                        os.path.join(savedir, "model.{}.pt".format(metric_key))
+                        os.path.join(savedir, "model.{}.pt".format(metric_key)),
                     )
-                    with open(os.path.join(savedir, 
-                                           "samples", "best_{}.pkl".format(metric_key)), "wb") as f:
-                        pickle.dump(
-                            dict(var=var_generated, skew=skew_generated), f
-                        )
-            
+                    with open(
+                        os.path.join(
+                            savedir, "samples", "best_{}.pkl".format(metric_key)
+                        ),
+                        "wb",
+                    ) as f:
+                        pickle.dump(dict(var=var_generated, skew=skew_generated), f)
+
         else:
             pass
 
-        buf = {k:np.mean(v) for k,v in buf.items()}
-        buf.update({k:np.mean(v) for k,v in buf_valid.items()})
+        buf = {k: np.mean(v) for k, v in buf.items()}
+        buf.update({k: np.mean(v) for k, v in buf_valid.items()})
         buf["epoch"] = ep
-        buf["lr"] = optimizer.state_dict()['param_groups'][0]['lr']
+        buf["lr"] = optimizer.state_dict()["param_groups"][0]["lr"]
         buf["time"] = default_timer() - t1
-        #buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
+        # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         if recorded:
             buf["w_skew"] = w_skew
             buf["w_var"] = w_var
@@ -562,13 +657,14 @@ def run(args):
         torch.save(
             dict(
                 weights=fno.state_dict(),
-                metrics={k:v.state_dict() for k,v in metric_trackers.items()},
-                ema_helper=ema_helper.state_dict()
+                metrics={k: v.state_dict() for k, v in metric_trackers.items()},
+                ema_helper=ema_helper.state_dict(),
+                last_epoch=ep,
             ),
-            os.path.join(savedir, "model.pt")
+            os.path.join(savedir, "model.pt"),
         )
 
-if __name__ == '__main__':
 
+if __name__ == "__main__":
     args = DotDict(vars(parse_args()))
     run(args)
