@@ -47,83 +47,39 @@ logger = get_logger(__name__)
 device = torch.device("cuda:0")
 
 
-def count_params(model):
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([np.prod(p.size()) for p in model_parameters])
-    return params
-
+from dataclasses import dataclass, field
+from typing import List, Union
+from omegaconf import OmegaConf as OC
 
 def parse_args():
     parser = argparse.ArgumentParser(description="")
     # parser.add_argument('--datadir', type=str, default="")
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument(
-        "--val_batch_size",
-        type=int,
-        default=512,
-        help="Batch size used for generating samples at inference time",
-    )
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument(
-        "--val_size",
-        type=float,
-        default=0.1,
-        help="Size of the validation set (as a float in [0,1])",
-    )
-    parser.add_argument("--record_interval", type=int, default=100)
-    parser.add_argument("--savedir", required=True, type=str)
-    # Samplers and prior distribution
-    parser.add_argument(
-        "--white_noise",
-        action="store_true",
-        help="If set, use independent Gaussian noise instead",
-    )
-    parser.add_argument(
-        "--augment", action="store_true", help="If set, use data augmentation"
-    )
-    parser.add_argument("--n_critic", type=int, default=10,
-                        help="Number of D iterations per G")
-    parser.add_argument("--lambda_grad", type=float, default=10., help="grad penalty")
-    parser.add_argument(
-        "--tau",
-        type=float,
-        default=1.0,
-        help="Larger tau gives rougher (noisier) noise",
-    )
-    parser.add_argument(
-        "--alpha", type=float, default=1.5, help="Larger alpha gives smoother noise"
-    )
-    parser.add_argument(
-        "--sigma_x0", type=float, default=1.0, help="Variance of the prior distribution"
-    )
-    parser.add_argument(
-        "--d_co_domain",
-        type=int,
-        default=32,
-        help="Is this analogous to `dim` for a regular U-Net?",
-    )
-    parser.add_argument("--npad", type=int, default=8)
-    # Optimisation
-    parser.add_argument("--lr", type=float, default=1e-3)
-    # Evaluation
-    parser.add_argument(
-        "--Ntest",
-        type=int,
-        default=1024,
-        help="Number of examples to generate for validation "
-        + "(generating skew and variance metrics)",
-    )
-    # Misc
-    parser.add_argument(
-        "--num_workers", type=int, default=2, help="Number of workers for data loader"
-    )
-    parser.add_argument("--ema_rate", type=float, default=None)
+    parser.add_argument("--savedir", type=str, required=True)
+    parser.add_argument("--cfg", type=str, required=True)
     args = parser.parse_args()
     return args
 
+@dataclass
+class Arguments:
 
-# Inport data
-
+    batch_size: int = 16
+    val_batch_size: int = 512
+    epochs: int = 100
+    val_size: float = 0.1
+    record_interval: int = 100
+    white_noise: bool = False
+    augment: bool = False
+    n_critic: int = 10
+    lambda_grad: float = 10.
+    tau: float = 1.0
+    alpha: float = 1.5
+    sigma_x0: float = 1.0
+    d_co_domain: int = 32
+    npad: int = 8
+    lr: float = 1e-3
+    Ntest: int = 1024
+    num_workers: int = 2
+    ema_rate: Union[float, None] = None
 
 @torch.no_grad()
 def sample(
@@ -211,11 +167,10 @@ def calculate_gradient_penalty(model, real_images, fake_images, device, res):
     return gradient_penalty
 
 
-def init_model(args, checkpoint="model.pt"):
+def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
 
     # Create the savedir if necessary.
-    savedir = args.savedir
     logger.info("savedir: {}".format(savedir))
     if not os.path.exists(savedir):
         os.makedirs(savedir)
@@ -325,8 +280,7 @@ class ValidationMetric:
         self.best = dd["best"]
 
 
-def run(args):
-    savedir = args.savedir
+def run(args, savedir):
 
     # TODO: clean up
     (
@@ -335,7 +289,7 @@ def run(args):
         start_epoch,
         (train_dataset, valid_dataset),
         noise_sampler,
-    ) = init_model(args)
+    ) = init_model(args, savedir)
     
     train_loader = DataLoader(
         train_dataset,
@@ -585,5 +539,12 @@ def run(args):
 
 
 if __name__ == "__main__":
-    args = DotDict(vars(parse_args()))
-    run(args)
+    args = parse_args()
+
+    cfg_file = json.loads(open(args.cfg, "r").read())
+    # structured() allows type checking
+    conf = OC.structured(Arguments(**cfg_file))
+    
+    # Since type checking is already done, convert
+    # it back ito a (dot-accessible) dictionary.
+    run(DotDict(conf), args.savedir)

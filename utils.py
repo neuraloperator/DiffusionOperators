@@ -6,6 +6,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+def count_params(model):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    return params
+
 class DotDict(dict):
     """
     a dictionary that supports dot notation 
