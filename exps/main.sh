@@ -44,7 +44,11 @@ fi
 CFG_ABS_PATH=`pwd`/exps/${CFG_FILE}
 echo "Absolute path of cfg: " $CFG_ABS_PATH
 
-cd ${SAVEDIR}/${EXP_NAME}/code
+if [ -z $DEBUG ]; then
+  cd ${SAVEDIR}/${EXP_NAME}/code
+else
+  echo "debug mode set, run code from this directory..."
+fi
 echo "Current working directory: " `pwd`
 
 python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}

@@ -329,7 +329,6 @@ def run(args, savedir):
 
     G_optim = torch.optim.Adam(G.parameters(), lr=args.lr, foreach=True) #, weight_decay=1e-4)
     D_optim = torch.optim.Adam(D.parameters(), lr=args.lr, foreach=True) #, weight_decay=1e-4)
-    fn_loss = nn.BCEWithLogitsLoss()
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     metric_trackers = {
@@ -452,11 +451,10 @@ def run(args, savedir):
 
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.
+            train_set_mean = train_dataset.dataset.x_train.mean(dim=0, keepdim=True)
+            gen_set_mean = u.mean(dim=0, keepdim=True).detach().cpu()
             mean_samples = torch.cat(
-                (
-                    train_dataset.dataset.x_train.mean(dim=0, keepdim=True),
-                    u.mean(dim=0, keepdim=True).detach().cpu(),
-                ),
+                (train_set_mean, gen_set_mean),
                 dim=0,
             )
             plot_samples(
@@ -465,6 +463,13 @@ def run(args, savedir):
                     savedir, "samples", "mean_sample_{}.png".format(ep + 1)
                 ),
             )
+            l2_mean_error = torch.mean((train_set_mean-gen_set_mean)**2)
+            metric_vals["l2_mean_error"] = l2_mean_error.item()
+            
+            train_set_var = train_dataset.dataset.x_train.var(dim=0, keepdim=True)
+            gen_set_var = u.var(dim=0, keepdim=True).detach().cpu()
+            l2_var_error = torch.mean((train_set_var-gen_set_var)**2)
+            metric_vals["l2_var_error"] = l2_var_error.item()
 
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
