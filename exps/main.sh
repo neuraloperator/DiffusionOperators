@@ -32,7 +32,7 @@ cd ..
 # If code does not exist for this experiment, copy
 # it over. Then cd into that directory and run the code
 if [ ! -d ${SAVEDIR}/${EXP_NAME}/code ]; then
-  mkdir ${SAVEDIR}/${EXP_NAME}
+  mkdir -p ${SAVEDIR}/${EXP_NAME}
   echo "Copying code..."
   rsync -r -v --exclude='exps' --exclude='.git' --exclude='__pycache__' --exclude '*.pyc' . ${SAVEDIR}/${EXP_NAME}/code
   if [ ! $? -eq 0 ]; then
