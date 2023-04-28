@@ -14,7 +14,9 @@ from utils import (DotDict,
                    format_tuple,
                    rescale)
 
-from train import init_model, sample
+from train import init_model, sample, Arguments
+
+from omegaconf import OmegaConf as OC
 
 from setup_logger import get_logger
 logger = get_logger(__name__)
@@ -28,7 +30,7 @@ def parse_args():
                         help="dump stats here")
     parser.add_argument("--checkpoint", type=str, default="model.pt")
     parser.add_argument("--mode", type=str, 
-                        choices=['generate', 'plot'],
+                        choices=['generate'],
                         default='generate',
                         help="Which mode to use?")
     parser.add_argument("--val_batch_size", type=int, default=512,
@@ -47,17 +49,24 @@ if __name__ == '__main__':
         os.makedirs(args.savedir)
 
     expdir = args.exp_name
-    cfg = DotDict(
-        json.loads(
-            open(os.path.join(expdir, "config.json"),"r").read()
-        )
+    cfg = json.loads(
+        open(os.path.join(expdir, "config.json"),"r").read()
     )
-    #print(cfg)
+    chkpt_file = os.path.join(expdir, args.checkpoint)
+    # Validate the arguments. If anything is wrong this will
+    # raise an exception.
+    _ = OC.structured(Arguments(**cfg))
+    cfg = DotDict(cfg)
 
-    print(json.dumps(cfg, indent=4))
+    logger.info(json.dumps(cfg, indent=4))
 
-    fno, ema_helper, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
-        init_model(cfg, args.checkpoint)
+    (
+        G, D,
+        ema_helper,
+        start_epoch,
+        (train_dataset, valid_dataset),
+        noise_sampler,
+    ) = init_model(cfg, args.savedir, checkpoint=chkpt_file)
 
     if args.mode == 'generate':
 
@@ -65,9 +74,8 @@ if __name__ == '__main__':
 
         with ema_helper:
             u, fn_outs = sample(
-                fno, init_sampler, noise_sampler, sigma, 
-                bs=args.val_batch_size, n_examples=args.Ntest, T=cfg.T,
-                epsilon=cfg.epsilon,
+                G, noise_sampler,
+                bs=args.val_batch_size, n_examples=args.Ntest,
                 fns={"skew": circular_skew, "var": circular_var}
             )
             skew_generated = fn_outs['skew']
@@ -85,11 +93,13 @@ if __name__ == '__main__':
                 dict(var=var_generated, skew=skew_generated), f
             )
 
-    elif args.mode == 'plot':
+    #elif args.mode == 'plot':
 
-        samples, skew_generated, var_generated = torch.load(
-            os.path.join(args.savedir, "samples.{}.pkl".format(args.checkpoint))
-        )
+        samples = u.cpu()
+
+        #samples, skew_generated, var_generated = torch.load(
+        #    os.path.join(args.savedir, "samples.{}.pkl".format(args.checkpoint))
+        #)
 
         logger.info("samples min-max: {}, {}".format(samples.min(), samples.max()))
         #print("skew min-max: {}, {}".format(skew.min(), skew.max()))
@@ -109,7 +119,7 @@ if __name__ == '__main__':
         x_train = train_dataset.dataset.x_train
         mean_train_set = x_train.mean(dim=0, keepdim=True)
         
-        mean_sample_set = torch.clamp(samples, -1, 1).mean(dim=0, keepdim=True).detach().cpu()
+        mean_sample_set = samples.mean(dim=0, keepdim=True).detach().cpu()
         print("min max of mean train set: {:.3f}, {:.3f}".format(
             mean_train_set.min(), mean_train_set.max()
         ))
@@ -130,6 +140,12 @@ if __name__ == '__main__':
             outfile=os.path.join(args.savedir, "mean_sample.{}.png".format(args.checkpoint)),
             figsize=(8,4)
         )
+
+        l2_mean_error = torch.mean((mean_train_set-mean_sample_set)**2)
+        logger.info("Squared L2 between mean real vs mean sample image: {:.3f}".format(l2_mean_error))
+        l2_norm_mean = torch.mean(mean_sample_set**2)
+        logger.info("Squared L2 norm for mean sample image: {:.3f}".format(l2_norm_mean))
+        
 
         #import pdb; pdb.set_trace()
 

@@ -335,6 +335,8 @@ def run(args, savedir):
         "w_skew": ValidationMetric(),
         "w_var": ValidationMetric(),
         "w_total": ValidationMetric(),
+        "l2_mean_error": ValidationMetric(),
+        "l2_var_error": ValidationMetric()
     }
 
     for ep in range(start_epoch, args.epochs):
@@ -453,21 +455,30 @@ def run(args, savedir):
             # set and generated set.
             train_set_mean = train_dataset.dataset.x_train.mean(dim=0, keepdim=True)
             gen_set_mean = u.mean(dim=0, keepdim=True).detach().cpu()
-            mean_samples = torch.cat(
-                (train_set_mean, gen_set_mean),
-                dim=0,
-            )
             plot_samples(
-                mean_samples,  # of shape (2, res, res, 2)
+                torch.cat(
+                    (train_set_mean, gen_set_mean),
+                    dim=0,
+                ),  # of shape (2, res, res, 2)
                 outfile=os.path.join(
                     savedir, "samples", "mean_sample_{}.png".format(ep + 1)
                 ),
             )
             l2_mean_error = torch.mean((train_set_mean-gen_set_mean)**2)
             metric_vals["l2_mean_error"] = l2_mean_error.item()
-            
+
+            # Kamyar's suggestion: do the same for variance
             train_set_var = train_dataset.dataset.x_train.var(dim=0, keepdim=True)
             gen_set_var = u.var(dim=0, keepdim=True).detach().cpu()
+            plot_samples(
+                torch.cat(
+                    (train_set_var, gen_set_var),
+                    dim=0,
+                ),  # of shape (2, res, res, 2)
+                outfile=os.path.join(
+                    savedir, "samples", "var_sample_{}.png".format(ep + 1)
+                ),
+            )
             l2_var_error = torch.mean((train_set_var-gen_set_var)**2)
             metric_vals["l2_var_error"] = l2_var_error.item()
 
@@ -522,9 +533,9 @@ def run(args, savedir):
         buf["time"] = default_timer() - t1
         # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         if recorded:
-            buf["w_skew"] = w_skew
-            buf["w_var"] = w_var
-            buf["w_total"] = w_skew + w_var
+            for k,v in metric_vals.items():
+                buf[k] = v
+            
         f_write.write(json.dumps(buf) + "\n")
         f_write.flush()
         print(json.dumps(buf))
