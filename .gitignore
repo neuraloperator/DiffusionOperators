@@ -1,0 +1,6 @@
+exps/
+__pycache__
+*.pyc
+.vscode
+*.*~
+*.*#
