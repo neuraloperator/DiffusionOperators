@@ -104,10 +104,52 @@ class GaussianRF_idct(object):
         L[:,:,1] = cv2.idct(L[:,:,1])
         return L
 
-class IndependentGaussian(object):
+def get_fixed_coords(Ln1, Ln2):
+    xs = torch.linspace(0, 1, steps=Ln1+1)[0:-1]
+    ys = torch.linspace(0, 1, steps=Ln2+1)[0:-1]
+    xx, yy = torch.meshgrid(xs, ys, indexing='xy')
+    coords = torch.cat([yy.reshape(-1, 1), xx.reshape(-1, 1)], dim=-1)
+    return coords
+
+class GaussianRF_RBF(object):
+    """
+    Gaussian random field Non-Periodic Boundary
+    mean 0
+    covariance operator C = (-Delta + tau^2)^(-alpha)
+    Delta is the Laplacian with zero Neumann boundary condition
     """
 
-    """
+    def rbf(self, x, y, sigma):
+        return torch.exp( torch.norm(x-y)**2 / sigma**2 ) / math.sqrt(2*torch.pi*sigma**2)
+
+    def __init__(self, Ln1, Ln2, sigma = 1, device=None):
+        self.Ln1 = Ln1
+        self.Ln2 = Ln2
+        self.device = device
+        self.sigma = sigma
+
+        # (s^2, 2)
+        meshgrid = get_fixed_coords(self.Ln1, self.Ln2)
+        # (s^2, s^2)
+        self.C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2*sigma**2))
+        self.L = torch.linalg.cholesky(self.C)
+        
+    def sample(self, N):
+        # (N, s^2, s^2)
+        L_padded = self.L.repeat(N, 1, 1)
+        # (N, s^2, 2)
+        z_mat = torch.randn((N, self.Ln1*self.Ln2, 2))
+
+        # (N, s^2, s^2) x (N, s^2, 1) -> (N, s^2, 2)
+        sample = torch.bmm(L_padded, z_mat)
+
+        # reshape into (N, s, s, 2)
+        sample_rshp = sample.reshape(-1, self.Ln1, self.Ln2, 2)
+
+        return sample_rshp
+
+
+class IndependentGaussian(object):
 
     def __init__(self, Ln1, Ln2, sigma=1, device=None):
         self.Ln1 = Ln1
