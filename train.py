@@ -52,7 +52,7 @@ def count_params(model):
     params = sum([np.prod(p.size()) for p in model_parameters])
     return params
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import List, Union
 from omegaconf import OmegaConf as OC
 
@@ -79,19 +79,21 @@ class Arguments:
     tau: float = 1.0
     alpha: float = 1.5
     sigma_x0: float = 1.0
+    schedule: str = None
 
     white_noise: bool = False
     epsilon: float = 2e-5
     sigma_1: float = 1.0
     sigma_L: float = 0.01
     T: int = 100
+    L: int = 10
 
     factorization: str = None
     num_freqs_input: int = 0
     
     d_co_domain: int = 32
     npad: int = 8
-    mult_dims: str = "[1,2,4,4]"
+    mult_dims: List[int] = field(default_factory=lambda: [1,2,4,4])
     fmult: float = 0.25
     rank: float = 1.0
     groups: int = 0
@@ -174,11 +176,10 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     return loss
 
 
-def init_model(args, checkpoint="model.pt"):
+def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
 
     # Create the savedir if necessary.
-    savedir = args.savedir
     logger.info("savedir: {}".format(savedir))
     if not os.path.exists(savedir):
         os.makedirs(savedir)
@@ -317,8 +318,7 @@ class ValidationMetric:
         self.best = dd["best"]
 
 
-def run(args):
-    savedir = args.savedir
+def run(args: Arguments, savedir: str):
 
     # TODO: clean up
     (
@@ -327,7 +327,7 @@ def run(args):
         start_epoch,
         (train_dataset, valid_dataset),
         (init_sampler, noise_sampler, sigma),
-    ) = init_model(args)
+    ) = init_model(args, savedir)
 
     # with ema_helper:
     #    print("test")
@@ -371,7 +371,7 @@ def run(args):
 
     # Save config file
     with open(os.path.join(savedir, "config.json"), "w") as f:
-        f.write(json.dumps(args))
+        f.write(json.dumps(asdict(args)))
 
     # Compute the circular variance and skew on the training set
     # and save this to the experiment folder.
@@ -607,4 +607,5 @@ if __name__ == "__main__":
 
     # Since type checking is already done, convert
     # it back ito a (dot-accessible) dictionary.
-    run(DotDict(conf), args.savedir)
+    # (OC.to_object() returns back an Arguments object)
+    run(OC.to_object(conf), args.savedir)

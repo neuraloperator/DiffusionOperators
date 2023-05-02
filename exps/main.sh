@@ -44,10 +44,10 @@ fi
 CFG_ABS_PATH=`pwd`/exps/${CFG_FILE}
 echo "Absolute path of cfg: " $CFG_ABS_PATH
 
-if [ -z $DEBUG ]; then
+if [ -z $RUN_LOCAL ]; then
   cd ${SAVEDIR}/${EXP_NAME}/code
 else
-  echo "debug mode set, run code from this directory..."
+  echo "RUN_LOCAL mode set, run code from this directory..."
 fi
 echo "Current working directory: " `pwd`
 
