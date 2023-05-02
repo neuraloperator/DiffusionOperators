@@ -142,6 +142,13 @@ def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
     plt.colorbar(bar, cax=cax)
     plt.savefig(outfile, bbox_inches='tight')
 
+def to_phase(samples: torch.Tensor):
+    assert samples.size(-1) == 2, "Last dim should be 2d"
+    phase = torch.atan2(samples[:,:,:,1], 
+                        samples[:,:,:,0]).cpu().detach()
+    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    return phase
+
 def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
                  subtitles=None,
                  figsize=(16,4)):

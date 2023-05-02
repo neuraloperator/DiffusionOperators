@@ -114,35 +114,6 @@ def sample(
     # assert len(buf) == n_examples
     return buf, fn_outputs
 
-def score_matching_loss(fno, u, sigma, noise_sampler):
-    """
-    Notes:
-
-    for x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-      || \sigma_i*score_fn(x, \sigma_i) + (x - x0) / \sigma_i ||_2
-    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (x0 + noise - x0) / \sigma_i||_2
-    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (noise) / \sigma_i||_2
-
-    NOTE: if we use the trick from "Improved techniques for SBGMs" paper then:
-    score_fn(x0+noise, \sigma_i) = score_fn(x0+noise) / \sigma_i,
-    which we can just implement inside the unet's forward() method:
-
-    loss = || \sigma_i*(score_fn(x0+noise) / \sigma_i) + (noise) / \sigma_i||_2
-    """
-
-    bsize = u.size(0)
-    # Sample a noise scale per element in the minibatch
-    idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
-    this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
-    # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
-    noise = this_sigmas * noise_sampler.sample(bsize)
-    # term1 = score_fn(x0+noise)
-    u_noised = u + noise
-    term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
-    term2 = noise / this_sigmas
-    loss = ((term1 + term2) ** 2).mean()
-    return loss
-
 def calculate_gradient_penalty(model, real_images, fake_images, device, res):
     """Calculates the gradient penalty loss for GAN"""
     # Random weight term for interpolation between real and fake data
