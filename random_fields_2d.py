@@ -4,8 +4,13 @@ import numpy as np
 import cv2
 import math
 
-#Gaussian random fields with Matern-type covariance: C = sigma^2 (-Lap + tau^2 I)^-alpha
-#Generates random field samples on the domain [0,L1] x [0,L2]
+from setup_logger import get_logger
+logger = get_logger(__name__)
+
+from math_utils import MPA_Lya, MPA_Lya_Inv
+FastMatSqrt = MPA_Lya.apply
+FastInvSqrt = MPA_Lya_Inv.apply
+
 
 class PeriodicGaussianRF2d(object):
 
@@ -113,16 +118,10 @@ def get_fixed_coords(Ln1, Ln2):
 
 class GaussianRF_RBF(object):
     """
-    Gaussian random field Non-Periodic Boundary
-    mean 0
-    covariance operator C = (-Delta + tau^2)^(-alpha)
-    Delta is the Laplacian with zero Neumann boundary condition
     """
 
-    def rbf(self, x, y, sigma):
-        return torch.exp( torch.norm(x-y)**2 / sigma**2 ) / math.sqrt(2*torch.pi*sigma**2)
-
-    def __init__(self, Ln1, Ln2, sigma = 1, device=None):
+    @torch.no_grad()
+    def __init__(self, Ln1, Ln2, sigma = 1, eps = 1, fast_sqrt=False, device=None):
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
@@ -131,20 +130,46 @@ class GaussianRF_RBF(object):
         # (s^2, 2)
         meshgrid = get_fixed_coords(self.Ln1, self.Ln2)
         # (s^2, s^2)
-        self.C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2*sigma**2))
-        self.L = torch.linalg.cholesky(self.C)
-        
-    def sample(self, N):
-        # (N, s^2, s^2)
-        L_padded = self.L.repeat(N, 1, 1)
-        # (N, s^2, 2)
-        z_mat = torch.randn((N, self.Ln1*self.Ln2, 2))
+        C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2*sigma**2)).to(device)
+        # Need to add some regularisation or else the sqrt won't exist
+        I = torch.eye(C.size(-1)).to(device)
+        self.C = C + (eps**2)*I
 
+        self.L = torch.linalg.cholesky(self.C).to(device)
+
+        # First compute C_half. This will take a while to compute
+        # but if we don't mind missing out on a little precision
+        # we can instead use FastMatSqrt.
+        if fast_sqrt:
+            C_half = FastMatSqrt(self.C.unsqueeze(0))[0]
+        else:
+            # Really slow...
+            W, S, Vh = torch.linalg.svd(self.C)
+            C_half = torch.matmul(torch.matmul(W, torch.diag(torch.sqrt(S))), Vh)
+        # Then take inverse of it
+        C_half_inv = torch.linalg.inv(C_half)
+
+        precision_err = torch.sum(((C_half_inv@C_half_inv) - torch.linalg.inv(self.C))**2).item()
+        logger.warning("sum((C_half_inv*C_half_inv - C_inv)**2) = {}".format(precision_err))
+
+        self.C_half_inv = C_half_inv
+
+    @torch.no_grad()
+    def sample(self, N):
         # (N, s^2, s^2) x (N, s^2, 1) -> (N, s^2, 2)
-        sample = torch.bmm(L_padded, z_mat)
+        # We can do this in one big torch.bmm, but I am concerned about memory
+        # so let's just do it iteratively.
+        #L_padded = self.L.repeat(N, 1, 1)
+        #z_mat = torch.randn((N, self.Ln1*self.Ln2, 2)).to(self.device)
+        #sample = torch.bmm(L_padded, z_mat)
+        samples = torch.zeros((N, self.Ln1*self.Ln2, 2)).to(self.device)
+        for ix in range(N):
+            # (s^2, s^2) * (s^2, 2) -> (s^2, 2)
+            this_z = torch.randn(self.Ln1*self.Ln2, 2).to(self.device)
+            samples[ix] = torch.matmul(self.L, this_z)
 
         # reshape into (N, s, s, 2)
-        sample_rshp = sample.reshape(-1, self.Ln1, self.Ln2, 2)
+        sample_rshp = samples.reshape(-1, self.Ln1, self.Ln2, 2)
 
         return sample_rshp
 

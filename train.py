@@ -29,7 +29,7 @@ from utils import (
     plot_samples_grid,
     plot_samples,
 )
-from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_idct, IndependentGaussian
+from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_RBF, IndependentGaussian
 
 # from models import FNO2d, UNO
 from models import UNO
@@ -76,8 +76,6 @@ class Arguments:
     augment: bool = False
     n_critic: int = 10
     lambda_grad: float = 10.
-    tau: float = 1.0
-    alpha: float = 1.5
     sigma_x0: float = 1.0
     schedule: str = None
 
@@ -148,18 +146,33 @@ def sample(
 
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
+
+    
     Notes:
+    ------
 
-    for x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-      || \sigma_i*score_fn(x, \sigma_i) + (x - x0) / \sigma_i ||_2
-    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (x0 + noise - x0) / \sigma_i||_2
-    = || \sigma_i*score_fn(x0+noise, \sigma_i) + (noise) / \sigma_i||_2
+    For x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
+    
+      loss = || sigma_i*score_fn(x, sigma_i) + (x - x0) / sigma_i ||
+           = || sigma_i*score_fn(x0+noise, sigma_i) + (x0 + noise - x0) / sigma_i||
+           = || sigma_i*score_fn(x0+noise, sigma_i) + (noise) / sigma_i||
 
-    NOTE: if we use the trick from "Improved techniques for SBGMs" paper then:
-    score_fn(x0+noise, \sigma_i) = score_fn(x0+noise) / \sigma_i,
-    which we can just implement inside the unet's forward() method:
+    If we use the trick from "Improved techniques for SBGMs" paper then:
+    
+      loss = || score_fn(x0+noise, sigma_i) = score_fn(x0+noise) / sigma_i ||
+    
+    which we can just implement inside the unet's forward(). This means that
+    the actual loss would be:
 
-    loss = || \sigma_i*(score_fn(x0+noise) / \sigma_i) + (noise) / \sigma_i||_2
+      loss = || sigma_i*score_fn(x0+noise)/sigma_i + (noise)/sigma_i||
+
+    The sigmas for the first term cancel out and we finally obtain:
+
+      loss = || score_fn(x0+noise) + noise/sigma_i||
+
+    Don't forget for the new loss fn we need to dot product by C_half_inv:
+
+      loss_rbf = || C_half_inv*(score_fn(x0+noise) + noise/sigma_i) ||
     """
 
     bsize = u.size(0)
@@ -170,9 +183,23 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     noise = this_sigmas * noise_sampler.sample(bsize)
     # term1 = score_fn(x0+noise)
     u_noised = u + noise
+    
     term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
     term2 = noise / this_sigmas
-    loss = ((term1 + term2) ** 2).mean()
+
+    # (1, s^2, s^2) -> (bs, s^2, s^2)
+    C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
+    res_sq = u.size(1)*u.size(2)
+    # (bs, s^2, 2)
+    terms_flattened = (term1+term2).view(bsize, res_sq, -1)
+
+    # inv(C)*terms_flattened = 
+    # (bs, s^2, s^2) x (bs, s^2, 2) -> (bs, s^2, 2)
+    scaled_loss = torch.bmm(C_half_inv, terms_flattened)
+
+    # loss = C_inv * (sigma*score_net + noise)
+    loss = (scaled_loss ** 2).mean()
+    
     return loss
 
 
@@ -264,11 +291,11 @@ def init_model(args, savedir, checkpoint="model.pt"):
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
         init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
-        noise_sampler = GaussianRF_idct(
-            s, s, alpha=args.alpha, tau=args.tau, sigma=1.0, device=device
+        noise_sampler = GaussianRF_RBF(
+            s, s, sigma=1.0, device=device
         )
-        init_sampler = GaussianRF_idct(
-            s, s, alpha=args.alpha, tau=args.tau, sigma=args.sigma_x0, device=device
+        init_sampler = GaussianRF_RBF(
+            s, s, sigma=args.sigma_x0, device=device
         )
 
     if args.sigma_1 < args.sigma_L:
@@ -352,9 +379,7 @@ def run(args: Arguments, savedir: str):
             os.path.join(
                 savedir,
                 "noise",
-                "init_samples_tau{}_alpha{}_sigma{}.{}".format(
-                    args.tau, args.alpha, args.sigma_1, ext
-                ),
+                "init_samples.{}".format(ext),
             ),
         )
     noise_samples = noise_sampler.sample(5).cpu()
@@ -365,7 +390,7 @@ def run(args: Arguments, savedir: str):
                 savedir,
                 "noise",
                 # implicit that sigma here == 1.0
-                "noise_samples_tau{}_alpha{}.{}".format(args.tau, args.alpha, ext),
+                "noise_samples.{}".format(ext),
             ),
         )
 
@@ -423,7 +448,7 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            # if iter_ == 10: # TODO add debug flag
+            #if iter_ == 10: # TODO add debug flag
             #    break
 
             if iter_ == 0 and ep == 0:
