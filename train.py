@@ -75,7 +75,7 @@ class Arguments:
     white_noise: bool = False
     augment: bool = False
     n_critic: int = 10
-    lambda_grad: float = 10.
+
     sigma_x0: float = 1.0
     schedule: str = None
 
