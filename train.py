@@ -61,6 +61,10 @@ def parse_args():
     # parser.add_argument('--datadir', type=str, default="")
     parser.add_argument("--savedir", type=str, required=True)
     parser.add_argument("--cfg", type=str, required=True)
+    parser.add_argument("--override_cfg", action="store_true",
+        help="If this is set, then if there already exists a config.json " + \
+             "in the directory defined by savedir, load that instead of args.cfg. " + \
+             "This should be set so that SLURM does the right thing if the job is restarted.")
     args = parser.parse_args()
     return args
 
@@ -291,12 +295,14 @@ def init_model(args, savedir, checkpoint="model.pt"):
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
         init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
+        logger.debug("Initialising noise and init sampler...")
         noise_sampler = GaussianRF_RBF(
             s, s, sigma=1.0, device=device
         )
         init_sampler = GaussianRF_RBF(
             s, s, sigma=args.sigma_x0, device=device
         )
+        logger.debug("... done noise and init samplers")
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError(
@@ -626,7 +632,19 @@ def run(args: Arguments, savedir: str):
 if __name__ == "__main__":
     args = parse_args()
 
-    cfg_file = json.loads(open(args.cfg, "r").read())
+    if args.override_cfg:
+        # If this is set, see if there already exists a cfg file in
+        # the specified savedir and load that instead. This flag
+        # should be set with SLURM jobs so that the resume properly.
+        logger.debug("override.cfg is set, scanning for pre-existing config...")
+        saved_cfg_file = os.path.join(args.savedir, "config.json")
+        if os.path.exists(saved_cfg_file):
+            cfg_file = json.loads(open(saved_cfg_file, "r").read())
+            logger.debug("Found {}, loading instead...".format(saved_cfg_file))
+        else:
+            cfg_file = json.loads(open(args.cfg, "r").read())
+    else:
+        cfg_file = json.loads(open(args.cfg, "r").read())
     # structured() allows type checking
     conf = OC.structured(Arguments(**cfg_file))
 

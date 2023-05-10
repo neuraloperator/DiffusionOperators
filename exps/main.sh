@@ -46,11 +46,11 @@ echo "Absolute path of cfg: " $CFG_ABS_PATH
 
 if [ -z $RUN_LOCAL ]; then
   cd ${SAVEDIR}/${EXP_NAME}/code
+  python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME} --override_cfg
 else
   echo "RUN_LOCAL mode set, run code from this directory..."
+  python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
 fi
 echo "Current working directory: " `pwd`
-
-python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
 
 #bash launch.sh $EXP_NAME

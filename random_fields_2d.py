@@ -3,18 +3,32 @@ import torch.fft as fft
 import numpy as np
 import cv2
 import math
+import os
 
 from setup_logger import get_logger
+
 logger = get_logger(__name__)
 
 from math_utils import MPA_Lya, MPA_Lya_Inv
+
 FastMatSqrt = MPA_Lya.apply
 FastInvSqrt = MPA_Lya_Inv.apply
 
 
 class PeriodicGaussianRF2d(object):
-
-    def __init__(self, s1, s2, L1=2*math.pi, L2=2*math.pi, alpha=2.0, tau=3.0, sigma=None, mean=None, device=None, dtype=torch.float32):
+    def __init__(
+        self,
+        s1,
+        s2,
+        L1=2 * math.pi,
+        L2=2 * math.pi,
+        alpha=2.0,
+        tau=3.0,
+        sigma=None,
+        mean=None,
+        device=None,
+        dtype=torch.float32,
+    ):
 
         self.s1 = s1
         self.s2 = s2
@@ -25,37 +39,59 @@ class PeriodicGaussianRF2d(object):
         self.dtype = dtype
 
         if sigma is None:
-            sigma = tau**(0.5*(2*alpha - 2.0))
+            sigma = tau ** (0.5 * (2 * alpha - 2.0))
 
-        const1 = (4*(math.pi**2))/(L1**2)
-        const2 = (4*(math.pi**2))/(L2**2)
-        norm_const = math.sqrt(2.0/(L1*L2))
+        const1 = (4 * (math.pi**2)) / (L1**2)
+        const2 = (4 * (math.pi**2)) / (L2**2)
+        norm_const = math.sqrt(2.0 / (L1 * L2))
 
-        freq_list1 = torch.cat((torch.arange(start=0, end=s1//2, step=1),\
-                                torch.arange(start=-s1//2, end=0, step=1)), 0)
-        k1 = freq_list1.view(-1,1).repeat(1, s2).type(dtype).to(device)
+        freq_list1 = torch.cat(
+            (
+                torch.arange(start=0, end=s1 // 2, step=1),
+                torch.arange(start=-s1 // 2, end=0, step=1),
+            ),
+            0,
+        )
+        k1 = freq_list1.view(-1, 1).repeat(1, s2).type(dtype).to(device)
 
-        freq_list2 = torch.cat((torch.arange(start=0, end=s2//2, step=1),\
-                                torch.arange(start=-s2//2, end=0, step=1)), 0)
+        freq_list2 = torch.cat(
+            (
+                torch.arange(start=0, end=s2 // 2, step=1),
+                torch.arange(start=-s2 // 2, end=0, step=1),
+            ),
+            0,
+        )
 
-        k2 = freq_list2.view(1,-1).repeat(s1, 1).type(dtype).to(device)
+        k2 = freq_list2.view(1, -1).repeat(s1, 1).type(dtype).to(device)
 
-        self.sqrt_eig = s1*s2*sigma*norm_const*((const1*k1**2 + const2*k2**2 + tau**2)**(-alpha/2.0))
-        self.sqrt_eig[0,0] = 0.0
-        self.sqrt_eig[torch.logical_and(k1 + k2 <= 0.0, torch.logical_or(k1 + k2 != 0.0, k1 <= 0.0))] = 0.0
+        self.sqrt_eig = (
+            s1
+            * s2
+            * sigma
+            * norm_const
+            * ((const1 * k1**2 + const2 * k2**2 + tau**2) ** (-alpha / 2.0))
+        )
+        self.sqrt_eig[0, 0] = 0.0
+        self.sqrt_eig[
+            torch.logical_and(
+                k1 + k2 <= 0.0, torch.logical_or(k1 + k2 != 0.0, k1 <= 0.0)
+            )
+        ] = 0.0
 
     def sample(self, N, xi=None):
         if xi is None:
-            xi  = torch.randn(N, self.s1, self.s2, 2, dtype=self.dtype, device=self.device)
-        
-        xi[...,0] = self.sqrt_eig*xi [...,0]
-        xi[...,1] = self.sqrt_eig*xi [...,1]
-        
+            xi = torch.randn(
+                N, self.s1, self.s2, 2, dtype=self.dtype, device=self.device
+            )
+
+        xi[..., 0] = self.sqrt_eig * xi[..., 0]
+        xi[..., 1] = self.sqrt_eig * xi[..., 1]
+
         u = fft.ifft2(torch.view_as_complex(xi), s=(self.s1, self.s2)).imag
 
         if self.mean is not None:
             u += self.mean
-        
+
         return u
 
 
@@ -67,25 +103,25 @@ class GaussianRF_idct(object):
     Delta is the Laplacian with zero Neumann boundary condition
     """
 
-    def __init__(self, Ln1, Ln2, alpha=2.0, tau=3.0, sigma = 1, device=None):
+    def __init__(self, Ln1, Ln2, alpha=2.0, tau=3.0, sigma=1, device=None):
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
         self.sigma = sigma
         k1 = np.arange(Ln1)
         k2 = np.arange(Ln2)
-        K1,K2 = np.meshgrid(k1,k2)
+        K1, K2 = np.meshgrid(k1, k2)
         # Define the (square root of) eigenvalues of the covariance operator
-        C = (np.pi**2)*(np.square(K1)+np.square(K2))+tau**2
-        C = np.power(C,-alpha/2.0)
-        C = (tau**(alpha-1))*C
+        C = (np.pi**2) * (np.square(K1) + np.square(K2)) + tau**2
+        C = np.power(C, -alpha / 2.0)
+        C = (tau ** (alpha - 1)) * C
         # store coefficient
         self.coeff = C
 
     def sample(self, N, mul=1):
-        z_mat = np.zeros((N,self.Ln1, self.Ln2, 2), dtype=np.float32)
+        z_mat = np.zeros((N, self.Ln1, self.Ln2, 2), dtype=np.float32)
         for ix in range(N):
-            z_mat[ix,:,:,:] = self._sample2d()
+            z_mat[ix, :, :, :] = self._sample2d()
         # convert to torch tensor
         z_mat = torch.from_numpy(z_mat)
         if self.device is not None:
@@ -98,30 +134,33 @@ class GaussianRF_idct(object):
         :return: GRF numpy.narray (Ln,Ln)
         """
         # # sample from normal discribution
-        xr = np.random.standard_normal(size=(self.Ln1,self.Ln2,2))
+        xr = np.random.standard_normal(size=(self.Ln1, self.Ln2, 2))
         # coefficients in fourier domain
-        L= np.einsum('ij,ijk->ijk', self.coeff, xr) 
-        L= (self.Ln1*self.Ln1)**(1/2)*L
+        L = np.einsum("ij,ijk->ijk", self.coeff, xr)
+        L = (self.Ln1 * self.Ln1) ** (1 / 2) * L
         # apply boundary condition
-        L[0,0,:] = 0.0 * L[0,0,:]
+        L[0, 0, :] = 0.0 * L[0, 0, :]
         # transform to real domain
-        L[:,:,0] = cv2.idct(L[:,:,0])
-        L[:,:,1] = cv2.idct(L[:,:,1])
+        L[:, :, 0] = cv2.idct(L[:, :, 0])
+        L[:, :, 1] = cv2.idct(L[:, :, 1])
         return L
 
+
 def get_fixed_coords(Ln1, Ln2):
-    xs = torch.linspace(0, 1, steps=Ln1+1)[0:-1]
-    ys = torch.linspace(0, 1, steps=Ln2+1)[0:-1]
-    xx, yy = torch.meshgrid(xs, ys, indexing='xy')
+    xs = torch.linspace(0, 1, steps=Ln1 + 1)[0:-1]
+    ys = torch.linspace(0, 1, steps=Ln2 + 1)[0:-1]
+    xx, yy = torch.meshgrid(xs, ys, indexing="xy")
     coords = torch.cat([yy.reshape(-1, 1), xx.reshape(-1, 1)], dim=-1)
     return coords
 
+
 class GaussianRF_RBF(object):
-    """
-    """
+    """ """
 
     @torch.no_grad()
-    def __init__(self, Ln1, Ln2, sigma = 1, eps = 1, fast_sqrt=False, device=None):
+    def __init__(
+        self, Ln1, Ln2, sigma=1, eps=1, fast_sqrt=False, device=None, cached=True
+    ):
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
@@ -130,27 +169,45 @@ class GaussianRF_RBF(object):
         # (s^2, 2)
         meshgrid = get_fixed_coords(self.Ln1, self.Ln2)
         # (s^2, s^2)
-        C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2*sigma**2)).to(device)
+        C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2 * sigma**2)).to(device)
         # Need to add some regularisation or else the sqrt won't exist
         I = torch.eye(C.size(-1)).to(device)
-        self.C = C + (eps**2)*I
-
+        self.C = C + (eps**2) * I
         self.L = torch.linalg.cholesky(self.C).to(device)
 
-        # First compute C_half. This will take a while to compute
-        # but if we don't mind missing out on a little precision
-        # we can instead use FastMatSqrt.
-        if fast_sqrt:
-            C_half = FastMatSqrt(self.C.unsqueeze(0))[0]
+        # Computing C_half_inv is expensive, so let's see if there exists a
+        # cached version first.
+        cache_file = os.path.join(
+            os.environ["CACHE_DIR"], f"{Ln1}_{Ln2}_{sigma}_{eps}_{fast_sqrt}.pt"
+        )
+        if os.path.exists(cache_file):
+            logger.debug("Found {}, loading...".format(cache_file))
+            C_half_inv = torch.load(cache_file)
         else:
-            # Really slow...
-            W, S, Vh = torch.linalg.svd(self.C)
-            C_half = torch.matmul(torch.matmul(W, torch.diag(torch.sqrt(S))), Vh)
-        # Then take inverse of it
-        C_half_inv = torch.linalg.inv(C_half)
+            logger.debug("Cannot find cached C_half_inv, generating...")
+            # First compute C_half. This will take a while to compute
+            # but if we don't mind missing out on  precision we can 
+            # instead use FastMatSqrt.
+            if fast_sqrt:
+                C_half = FastMatSqrt(self.C.unsqueeze(0))[0]
+            else:
+                # Really slow...
+                W, S, Vh = torch.linalg.svd(self.C)
+                C_half = torch.matmul(torch.matmul(W, torch.diag(torch.sqrt(S))), Vh)
+            # Then take inverse of it
+            C_half_inv = torch.linalg.inv(C_half)
 
-        precision_err = torch.sum(((C_half_inv@C_half_inv) - torch.linalg.inv(self.C))**2).item()
-        logger.warning("sum((C_half_inv*C_half_inv - C_inv)**2) = {}".format(precision_err))
+        if cached and not os.path.exists(cache_file):
+            # If caching is enabled and it doesn't already exist, save it here.
+            logger.info("Saving C_half_inv to {}".format(cache_file))
+            torch.save(C_half_inv, cache_file)
+
+        precision_err = torch.sum(
+            ((C_half_inv @ C_half_inv) - torch.linalg.inv(self.C)) ** 2
+        ).item()
+        logger.warning(
+            "sum((C_half_inv@C_half_inv - C_inv)**2) = {}".format(precision_err)
+        )
 
         self.C_half_inv = C_half_inv
 
@@ -159,13 +216,13 @@ class GaussianRF_RBF(object):
         # (N, s^2, s^2) x (N, s^2, 1) -> (N, s^2, 2)
         # We can do this in one big torch.bmm, but I am concerned about memory
         # so let's just do it iteratively.
-        #L_padded = self.L.repeat(N, 1, 1)
-        #z_mat = torch.randn((N, self.Ln1*self.Ln2, 2)).to(self.device)
-        #sample = torch.bmm(L_padded, z_mat)
-        samples = torch.zeros((N, self.Ln1*self.Ln2, 2)).to(self.device)
+        # L_padded = self.L.repeat(N, 1, 1)
+        # z_mat = torch.randn((N, self.Ln1*self.Ln2, 2)).to(self.device)
+        # sample = torch.bmm(L_padded, z_mat)
+        samples = torch.zeros((N, self.Ln1 * self.Ln2, 2)).to(self.device)
         for ix in range(N):
             # (s^2, s^2) * (s^2, 2) -> (s^2, 2)
-            this_z = torch.randn(self.Ln1*self.Ln2, 2).to(self.device)
+            this_z = torch.randn(self.Ln1 * self.Ln2, 2).to(self.device)
             samples[ix] = torch.matmul(self.L, this_z)
 
         # reshape into (N, s, s, 2)
@@ -175,7 +232,6 @@ class GaussianRF_RBF(object):
 
 
 class IndependentGaussian(object):
-
     def __init__(self, Ln1, Ln2, sigma=1, device=None):
         self.Ln1 = Ln1
         self.Ln2 = Ln2
