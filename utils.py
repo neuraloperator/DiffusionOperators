@@ -137,6 +137,18 @@ def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
     plt.colorbar(bar, cax=cax)
     plt.savefig(outfile, bbox_inches='tight')
 
+def plot_matrix(matrix: torch.Tensor, outfile: str, title: str = None, figsize=(6,6)):
+    assert len(matrix.shape) == 2, "matrix should be a 2d tensor"
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    this_plot = ax.matshow(matrix.cpu().numpy())
+    cax = fig.add_axes([ax.get_position().x1+0.01,
+                        ax.get_position().y0,0.02,
+                        ax.get_position().height])
+    plt.colorbar(this_plot, cax=cax)
+    if title is not None:
+        fig.suptitle(title)
+    plt.savefig(outfile, bbox_inches='tight')
+
 def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
                  subtitles=None,
                  figsize=(16,4)):

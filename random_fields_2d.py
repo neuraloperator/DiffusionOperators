@@ -159,26 +159,27 @@ class GaussianRF_RBF(object):
 
     @torch.no_grad()
     def __init__(
-        self, Ln1, Ln2, sigma=1, eps=1, fast_sqrt=False, device=None, cached=True
+        self, Ln1, Ln2, scale=1, eps=0.01, fast_sqrt=False, device=None, cached=True
     ):
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
-        self.sigma = sigma
+        self.scale = scale
 
         # (s^2, 2)
         meshgrid = get_fixed_coords(self.Ln1, self.Ln2)
         # (s^2, s^2)
-        C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2 * sigma**2)).to(device)
+        C = torch.exp(-torch.cdist(meshgrid, meshgrid) / (2 * scale**2)).to(device)
         # Need to add some regularisation or else the sqrt won't exist
         I = torch.eye(C.size(-1)).to(device)
         self.C = C + (eps**2) * I
+
         self.L = torch.linalg.cholesky(self.C).to(device)
 
         # Computing C_half_inv is expensive, so let's see if there exists a
         # cached version first.
         cache_file = os.path.join(
-            os.environ["CACHE_DIR"], f"{Ln1}_{Ln2}_{sigma}_{eps}_{fast_sqrt}.pt"
+            os.environ["CACHE_DIR"], f"{Ln1}_{Ln2}_{scale}_{eps}_{fast_sqrt}.pt"
         )
         if os.path.exists(cache_file):
             logger.debug("Found {}, loading...".format(cache_file))

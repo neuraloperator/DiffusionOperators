@@ -28,6 +28,7 @@ from utils import (
     plot_noise,
     plot_samples_grid,
     plot_samples,
+    plot_matrix
 )
 from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_RBF, IndependentGaussian
 
@@ -89,6 +90,8 @@ class Arguments:
     sigma_L: float = 0.01
     T: int = 100
     L: int = 10
+
+    rbf_scale: float = 1.0
 
     factorization: str = None
     num_freqs_input: int = 0
@@ -297,10 +300,10 @@ def init_model(args, savedir, checkpoint="model.pt"):
     else:
         logger.debug("Initialising noise and init sampler...")
         noise_sampler = GaussianRF_RBF(
-            s, s, sigma=1.0, device=device
+            s, s, scale=args.rbf_scale, device=device
         )
         init_sampler = GaussianRF_RBF(
-            s, s, sigma=args.sigma_x0, device=device
+            s, s, scale=args.rbf_scale, device=device
         )
         logger.debug("... done noise and init samplers")
 
@@ -388,6 +391,16 @@ def run(args: Arguments, savedir: str):
                 "init_samples.{}".format(ext),
             ),
         )
+        plot_matrix(
+            init_sampler.C[0:200, 0:200], 
+            os.path.join(
+                savedir,
+                "noise",
+                # implicit that sigma here == 1.0
+                "init_sampler_C.{}".format(ext),
+            ),
+            title="init_sampler.C[0:200,0:200]"
+        )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ["png", "pdf"]:
         plot_noise(
@@ -398,6 +411,16 @@ def run(args: Arguments, savedir: str):
                 # implicit that sigma here == 1.0
                 "noise_samples.{}".format(ext),
             ),
+        )
+        plot_matrix(
+            noise_sampler.C[0:200,0:200], 
+            os.path.join(
+                savedir,
+                "noise",
+                # implicit that sigma here == 1.0
+                "noise_sampler_C.{}".format(ext),
+            ),
+            title="noise_sampler.C[0:200,0:200]"
         )
 
     # Save config file
