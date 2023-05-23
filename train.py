@@ -158,51 +158,39 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     Notes:
     ------
 
-    For x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-    
-      loss = || sigma_i*score_fn(x, sigma_i) + (x - x0) / sigma_i ||
-           = || sigma_i*score_fn(x0+noise, sigma_i) + (x0 + noise - x0) / sigma_i||
-           = || sigma_i*score_fn(x0+noise, sigma_i) + (noise) / sigma_i||
+    We need to use Eqn. (12) of the original paper:
 
-    If we use the trick from "Improved techniques for SBGMs" paper then:
-    
-      loss = || score_fn(x0+noise, sigma_i) = score_fn(x0+noise) / sigma_i ||
-    
-    which we can just implement inside the unet's forward(). This means that
-    the actual loss would be:
+      || C_inv @ (u - G(u+eta)) ||^{2}
 
-      loss = || sigma_i*score_fn(x0+noise)/sigma_i + (noise)/sigma_i||
+    where `eta` is the noise and `u` is the original input.
 
-    The sigmas for the first term cancel out and we finally obtain:
+    This means that, unlike the usual score matching formulations
+    where `noise` is predicted from `u+noise`, here we have to predict
+    the original `u` from `u+noise`. We can do this by invoking
+    `fno.forward_train()`. If you want to predict the noise from u+noise
+    then use `fno.forward()` instead, which defines:
 
-      loss = || score_fn(x0+noise) + noise/sigma_i||
+    F = G(v) - v
 
-    Don't forget for the new loss fn we need to dot product by C_half_inv:
-
-      loss_rbf = || C_half_inv*(score_fn(x0+noise) + noise/sigma_i) ||
+    and this is what is needed when we sample with SGLD.
     """
 
     bsize = u.size(0)
+    
     # Sample a noise scale per element in the minibatch
     idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
     this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
-    # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
     noise = this_sigmas * noise_sampler.sample(bsize)
-    # term1 = score_fn(x0+noise)
-    u_noised = u + noise
-    
-    term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
-    term2 = noise / this_sigmas
+
+    inner_term = u - fno.forward_train(u+noise, idcs)
 
     # (1, s^2, s^2) -> (bs, s^2, s^2)
     C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
     res_sq = u.size(1)*u.size(2)
     # (bs, s^2, 2)
-    terms_flattened = (term1+term2).view(bsize, res_sq, -1)
+    inner_flattened = inner_term.view(bsize, res_sq, -1)
 
-    # inv(C)*terms_flattened = 
-    # (bs, s^2, s^2) x (bs, s^2, 2) -> (bs, s^2, 2)
-    scaled_loss = torch.bmm(C_half_inv, terms_flattened)
+    scaled_loss = torch.bmm(C_half_inv, inner_flattened)
 
     # loss = C_inv * (sigma*score_net + noise)
     loss = (scaled_loss ** 2).mean()
@@ -268,9 +256,13 @@ def init_model(args, savedir, checkpoint="model.pt"):
         ema_helper = EMAHelper(mu=args.ema_rate)
         ema_helper.register(fno)
 
+    logger.debug("Does path exist: {}".format(
+        os.path.join(savedir, checkpoint)))
+
     # Load checkpoint here if it exists.
     start_epoch = 0
     if os.path.exists(os.path.join(savedir, checkpoint)):
+        
         chkpt = torch.load(os.path.join(savedir, checkpoint))
         if "last_epoch" not in chkpt:
             start_epoch = 1

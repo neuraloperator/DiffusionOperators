@@ -281,8 +281,8 @@ class UNO(nn.Module):
 
         self.final_conv = nn.Conv2d(self.d_co_domain * 2, 2, 1, padding=0)
 
-    def forward(
-        self, x: torch.FloatTensor, t: torch.LongTensor, sigmas: torch.FloatTensor
+    def forward_train(
+        self, x: torch.FloatTensor, t: torch.LongTensor
     ):
         """
         Args:
@@ -357,7 +357,15 @@ class UNO(nn.Module):
 
         x_out = x_c6.permute(0, 2, 3, 1)
 
-        return x_out / sigmas
+        return x_out
+
+    def forward(
+        self, x: torch.FloatTensor, t: torch.LongTensor
+    ):
+        # As per Eqn. (16) in the original paper, define:
+        # F_{\theta} = G(v) - v, so this predicts `noise`
+        # from `u+noise`.
+        return self.forward(x, t) - x
 
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
