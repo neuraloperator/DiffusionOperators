@@ -184,24 +184,19 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     noise = this_sigmas * noise_sampler.sample(bsize)
 
     res_sq = u.size(1)*u.size(2)
-
-    pred_u = fno.forward_train(u+noise, idcs)
-    
-    # pred_u: (bs, s^2, 2)
-    pred_u = pred_u.view(bsize, res_sq, -1)
-    # C: (bs, s^2, s^2)
-    C = noise_sampler.C.unsqueeze(0).expand(bsize, -1, -1)
-    # Here we compute R @ G(u+noise)
-    R_times_pred_u = torch.bmm(C, pred_u)
+    # This internally does the preconditioning by R
+    pred_u = fno.forward_train(u+noise, idcs)    
     # u: (bs, s^2, 2)
+    pred_u = pred_u.view(bsize, res_sq, -1) # TODO make efficient
     u_flat = u.view(bsize, res_sq, -1)
     # Compute: u - R@G(u+eta)
-    inner_term = (u_flat - R_times_pred_u)
+    inner_term = (u_flat - pred_u)
     # Ok, now we need to compute C_inv @ (inner_term),
     # where inner_term = (u - R@G(u+eta))
     # C_half_inv: (bs, s^2, s^2)
     C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
-    # C_inv @ (u - R@G(u+eta)) 
+    # C_half_inv @ (u - R@G(u+eta))
+    # (bs, s^2, s^2) @ (bs, s^2, 2) -> (bs, s^2, 2)
     final_term = torch.bmm(C_half_inv, inner_term)
 
     # loss = C_inv * (sigma*score_net + noise)
@@ -316,6 +311,9 @@ def init_model(args, savedir, checkpoint="model.pt"):
             "sigma_1 < sigma_L, whereas sigmas should be monotonically "
             + "decreasing. You probably need to switch these two arguments around."
         )
+
+    # HACK: fix
+    fno.sampler = noise_sampler
 
     if args.schedule == "geometric":
         sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)

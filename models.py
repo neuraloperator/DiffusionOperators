@@ -309,6 +309,8 @@ class UNO(nn.Module):
         # s(x,sigma) = s(x) / sigma instead.
 
         bsize = x.size(0)
+        res = x.size(1)
+        
         grid = self.get_grid(x.shape, x.device)
         # grid = self.embedder(grid)
 
@@ -357,15 +359,22 @@ class UNO(nn.Module):
 
         x_out = x_c6.permute(0, 2, 3, 1)
 
-        return x_out
+        # Ok, now precondition with C
+        C = self.sampler.C.unsqueeze(0).expand(bsize, -1, -1)
+        out_flat = rearrange(x_out, 'b h w d -> b (h w) d', b=bsize, h=res, w=res)
+        R_times_out_flat = torch.bmm(C, out_flat)
+        R_times_out = rearrange(R_times_out_flat, 'b (h w) d -> b h w d', b=bsize, h=res, w=res)
+        return R_times_out
 
     def forward(
         self, x: torch.FloatTensor, t: torch.LongTensor
     ):
         # As per Eqn. (16) in the original paper, define:
-        # F_{\theta} = G(v) - v, so this predicts `noise`
+        # F_{\theta} = RG(v) - v, so this predicts `noise`
         # from `u+noise`.
-        return self.forward(x, t) - x
+        # Note that forward_train already preconditions
+        # with R internally.
+        return self.forward_train(x, t) - x
 
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
