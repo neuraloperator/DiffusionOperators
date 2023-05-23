@@ -160,9 +160,10 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
 
     We need to use Eqn. (12) of the original paper:
 
-      || C_inv @ (u - G(u+eta)) ||^{2}
+      || C_inv @ (u - RG(u+eta)) ||^{2}
 
-    where `eta` is the noise and `u` is the original input.
+    where `eta` is the noise and `u` is the original input. Here,
+    R is the preconditioning matrix (the covariance C).
 
     This means that, unlike the usual score matching formulations
     where `noise` is predicted from `u+noise`, here we have to predict
@@ -182,18 +183,29 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
     noise = this_sigmas * noise_sampler.sample(bsize)
 
-    inner_term = u - fno.forward_train(u+noise, idcs)
-
-    # (1, s^2, s^2) -> (bs, s^2, s^2)
-    C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
     res_sq = u.size(1)*u.size(2)
-    # (bs, s^2, 2)
-    inner_flattened = inner_term.view(bsize, res_sq, -1)
 
-    scaled_loss = torch.bmm(C_half_inv, inner_flattened)
+    pred_u = fno.forward_train(u+noise, idcs)
+    
+    # pred_u: (bs, s^2, 2)
+    pred_u = pred_u.view(bsize, res_sq, -1)
+    # C: (bs, s^2, s^2)
+    C = noise_sampler.C.unsqueeze(0).expand(bsize, -1, -1)
+    # Here we compute R @ G(u+noise)
+    R_times_pred_u = torch.bmm(C, pred_u)
+    # u: (bs, s^2, 2)
+    u_flat = u.view(bsize, res_sq, -1)
+    # Compute: u - R@G(u+eta)
+    inner_term = (u_flat - R_times_pred_u)
+    # Ok, now we need to compute C_inv @ (inner_term),
+    # where inner_term = (u - R@G(u+eta))
+    # C_half_inv: (bs, s^2, s^2)
+    C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
+    # C_inv @ (u - R@G(u+eta)) 
+    final_term = torch.bmm(C_half_inv, inner_term)
 
     # loss = C_inv * (sigma*score_net + noise)
-    loss = (scaled_loss ** 2).mean()
+    loss = (final_term ** 2).mean()
     
     return loss
 

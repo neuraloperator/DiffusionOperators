@@ -211,6 +211,7 @@ class GaussianRF_RBF(object):
         )
 
         self.C_half_inv = C_half_inv
+        self.C = C
 
     @torch.no_grad()
     def sample(self, N):
