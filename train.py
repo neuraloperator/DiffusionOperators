@@ -110,7 +110,7 @@ class Arguments:
 
 @torch.no_grad()
 def sample(
-    fno, init_sampler, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
 ):
     buf = []
     if fns is not None:
@@ -121,7 +121,7 @@ def sample(
     print(n_batches, n_examples, bs, "<<<")
 
     for _ in range(n_batches):
-        u = init_sampler.sample(bs)
+        u = noise_sampler.sample(bs)
         res = u.size(1)
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
@@ -181,7 +181,8 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     # Sample a noise scale per element in the minibatch
     idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
     this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
-    noise = this_sigmas * noise_sampler.sample(bsize)
+
+    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
 
     res_sq = u.size(1)*u.size(2)
     # This internally does the preconditioning by R
@@ -295,16 +296,12 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if args.white_noise:
         logger.warning("Using independent Gaussian noise, NOT grf noise...")
         noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
-        init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
     else:
-        logger.debug("Initialising noise and init sampler...")
+        logger.debug("Initialising noise sampler...")
         noise_sampler = GaussianRF_RBF(
             s, s, scale=args.rbf_scale, device=device
         )
-        init_sampler = GaussianRF_RBF(
-            s, s, scale=args.rbf_scale, device=device
-        )
-        logger.debug("... done noise and init samplers")
+        logger.debug("... done noise sampler")
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError(
@@ -334,7 +331,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         ema_helper,
         start_epoch,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        (noise_sampler, sigma),
     )
 
 
@@ -364,7 +361,7 @@ def run(args: Arguments, savedir: str):
         ema_helper,
         start_epoch,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        (noise_sampler, sigma),
     ) = init_model(args, savedir)
 
     # with ema_helper:
@@ -383,26 +380,6 @@ def run(args: Arguments, savedir: str):
         num_workers=args.num_workers,
     )
 
-    init_samples = init_sampler.sample(5).cpu()
-    for ext in ["png", "pdf"]:
-        plot_noise(
-            init_samples,
-            os.path.join(
-                savedir,
-                "noise",
-                "init_samples.{}".format(ext),
-            ),
-        )
-        plot_matrix(
-            init_sampler.C[0:200, 0:200], 
-            os.path.join(
-                savedir,
-                "noise",
-                # implicit that sigma here == 1.0
-                "init_sampler_C.{}".format(ext),
-            ),
-            title="init_sampler.C[0:200,0:200]"
-        )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ["png", "pdf"]:
         plot_noise(
@@ -459,6 +436,19 @@ def run(args: Arguments, savedir: str):
 
             u = u.to(device)
 
+            with ema_helper:
+                # This context mgr automatically applies EMA
+                u, fn_outs = sample(
+                    fno,
+                    noise_sampler,
+                    sigma,
+                    bs=args.val_batch_size,
+                    n_examples=args.Ntest,
+                    T=args.T,
+                    epsilon=args.epsilon,
+                    fns={"skew": circular_skew, "var": circular_var},
+                )
+
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
@@ -504,7 +494,7 @@ def run(args: Arguments, savedir: str):
                     logger.info(os.path.join(savedir, "u_prior.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
-                        init_sampler.sample(16),
+                        noise_sampler.sample(16),
                         outfile=os.path.join(savedir, "u_prior.png"),
                         figsize=(8, 8),
                     )
@@ -543,7 +533,6 @@ def run(args: Arguments, savedir: str):
                 # This context mgr automatically applies EMA
                 u, fn_outs = sample(
                     fno,
-                    init_sampler,
                     noise_sampler,
                     sigma,
                     bs=args.val_batch_size,
