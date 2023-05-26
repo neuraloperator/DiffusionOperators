@@ -284,7 +284,10 @@ class UNO(nn.Module):
     def forward_train(
         self, x: torch.FloatTensor, t: torch.LongTensor
     ):
+        
         """
+        Computes R @ G_{\theta}(u, t)
+        
         Args:
           x: float tensor of shape (bs, res, res, 2)
           t: long tensor of shape (bs,)
@@ -372,8 +375,6 @@ class UNO(nn.Module):
         # As per Eqn. (16) in the original paper, define:
         # F_{\theta} = RG(v) - v, so this predicts `noise`
         # from `u+noise`.
-        # Note that forward_train already preconditions
-        # with R internally.
         return self.forward_train(x, t) - x
 
     def get_grid(self, shape, device):
