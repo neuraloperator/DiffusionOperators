@@ -99,6 +99,7 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
                     torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
         if verbose:
             pbar.update(1)
+            pbar.set_postfix({'norm': (x0**2).mean().item(), 'lr': alpha.item()})
     if verbose:
         pbar.close()
         

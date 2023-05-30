@@ -176,42 +176,6 @@ class GaussianRF_RBF(object):
 
         self.L = torch.linalg.cholesky(self.C).to(device)
 
-        # Computing C_half_inv is expensive, so let's see if there exists a
-        # cached version first.
-        cache_file = os.path.join(
-            os.environ["CACHE_DIR"], f"{Ln1}_{Ln2}_{scale}_{eps}_{fast_sqrt}.pt"
-        )
-        if os.path.exists(cache_file):
-            logger.debug("Found {}, loading...".format(cache_file))
-            C_half_inv = torch.load(cache_file)
-        else:
-            logger.debug("Cannot find cached C_half_inv, generating...")
-            # First compute C_half. This will take a while to compute
-            # but if we don't mind missing out on  precision we can 
-            # instead use FastMatSqrt.
-            if fast_sqrt:
-                C_half = FastMatSqrt(self.C.unsqueeze(0))[0]
-            else:
-                # Really slow...
-                W, S, Vh = torch.linalg.svd(self.C)
-                C_half = torch.matmul(torch.matmul(W, torch.diag(torch.sqrt(S))), Vh)
-            # Then take inverse of it
-            C_half_inv = torch.linalg.inv(C_half)
-
-        if cached and not os.path.exists(cache_file):
-            # If caching is enabled and it doesn't already exist, save it here.
-            logger.info("Saving C_half_inv to {}".format(cache_file))
-            torch.save(C_half_inv, cache_file)
-
-        precision_err = torch.sum(
-            ((C_half_inv @ C_half_inv) - torch.linalg.inv(self.C)) ** 2
-        ).item()
-        logger.warning(
-            "sum((C_half_inv@C_half_inv - C_inv)**2) = {}".format(precision_err)
-        )
-
-        self.C_half_inv = C_half_inv
-
     @torch.no_grad()
     def sample(self, N):
         # (N, s^2, s^2) x (N, s^2, 1) -> (N, s^2, 2)

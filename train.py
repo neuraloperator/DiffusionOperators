@@ -92,6 +92,7 @@ class Arguments:
     L: int = 10
 
     rbf_scale: float = 1.0
+    rbf_eps: float = 0.01
 
     factorization: str = None
     num_freqs_input: int = 0
@@ -195,17 +196,17 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     term2 = noise / this_sigmas
 
     # (1, s^2, s^2) -> (bs, s^2, s^2)
-    C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
+    #C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
     res_sq = u.size(1)*u.size(2)
     # (bs, s^2, 2)
     terms_flattened = (term1+term2).view(bsize, res_sq, -1)
 
     # inv(C)*terms_flattened = 
     # (bs, s^2, s^2) x (bs, s^2, 2) -> (bs, s^2, 2)
-    scaled_loss = torch.bmm(C_half_inv, terms_flattened)
+    #scaled_loss = torch.bmm(C_half_inv, terms_flattened)
 
     # loss = C_inv * (sigma*score_net + noise)
-    loss = (scaled_loss ** 2).mean()
+    loss = (terms_flattened ** 2).mean()
     
     return loss
 
@@ -300,10 +301,10 @@ def init_model(args, savedir, checkpoint="model.pt"):
     else:
         logger.debug("Initialising noise and init sampler...")
         noise_sampler = GaussianRF_RBF(
-            s, s, scale=args.rbf_scale, device=device
+            s, s, scale=args.rbf_scale, eps=args.rbf_eps, device=device
         )
         init_sampler = GaussianRF_RBF(
-            s, s, scale=args.rbf_scale, device=device
+            s, s, scale=args.rbf_scale, eps=args.rbf_eps, device=device
         )
         logger.debug("... done noise and init samplers")
 
@@ -459,6 +460,20 @@ def run(args: Arguments, savedir: str):
 
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
+
+            """
+            u, fn_outs = sample(
+                fno,
+                init_sampler,
+                noise_sampler,
+                sigma,
+                bs=args.val_batch_size,
+                n_examples=args.Ntest,
+                T=args.T,
+                epsilon=args.epsilon,
+                fns={"skew": circular_skew, "var": circular_var},
+            )
+            """
 
             loss.backward()
             optimizer.step()
