@@ -271,6 +271,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
 
     # Load checkpoint here if it exists.
     start_epoch = 0
+    val_metrics = None
     if os.path.exists(os.path.join(savedir, checkpoint)):
         chkpt = torch.load(os.path.join(savedir, checkpoint))
         if "last_epoch" not in chkpt:
@@ -285,6 +286,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         logger.debug("keys in chkpt: {}".format(chkpt.keys()))
         fno.load_state_dict(chkpt["weights"])
         logger.info("metrics found in chkpt: {}".format(chkpt["metrics"]))
+        val_metrics = chkpt['metrics']
         if ema_helper is not None and "ema_helper" in chkpt:
             logger.info("EMA enabled, loading EMA weights...")
             ema_helper.load_state_dict(chkpt["ema_helper"])
@@ -332,6 +334,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         fno,
         ema_helper,
         start_epoch,
+        val_metrics,
         (train_dataset, valid_dataset),
         (init_sampler, noise_sampler, sigma),
     )
@@ -362,6 +365,7 @@ def run(args: Arguments, savedir: str):
         fno,
         ema_helper,
         start_epoch,
+        val_metrics,
         (train_dataset, valid_dataset),
         (init_sampler, noise_sampler, sigma),
     ) = init_model(args, savedir)
@@ -444,6 +448,9 @@ def run(args: Arguments, savedir: str):
         "w_var": ValidationMetric(),
         "w_total": ValidationMetric(),
     }
+    for key in val_metrics:
+        metric_trackers[key].load_state_dict(val_metrics[key])
+        logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
