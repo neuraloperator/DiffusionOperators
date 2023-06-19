@@ -56,7 +56,7 @@ if __name__ == '__main__':
 
     print(json.dumps(cfg, indent=4))
 
-    fno, ema_helper, start_epoch, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
+    fno, ema_helper, start_epoch, val_metrics, (train_dataset, valid_dataset), (init_sampler, noise_sampler, sigma) = \
         init_model(cfg, expdir, args.checkpoint)
 
     if args.mode == 'generate':

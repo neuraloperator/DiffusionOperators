@@ -440,7 +440,7 @@ def run(args: Arguments, savedir: str):
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr, foreach=True)
-    print(optimizer)
+    logger.debug("optimizer: {}".format(optimizer))
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
     metric_trackers = {
@@ -448,9 +448,10 @@ def run(args: Arguments, savedir: str):
         "w_var": ValidationMetric(),
         "w_total": ValidationMetric(),
     }
-    for key in val_metrics:
-        metric_trackers[key].load_state_dict(val_metrics[key])
-        logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
+    if val_metrics is not None:
+        for key in val_metrics:
+            metric_trackers[key].load_state_dict(val_metrics[key])
+            logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
