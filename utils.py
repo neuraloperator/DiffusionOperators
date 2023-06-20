@@ -18,12 +18,16 @@ class DotDict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
+def to_phase(samples: torch.Tensor):
+    assert samples.size(-1) == 2, "Last dim should be 2d"
+    phase = torch.atan2(samples[...,1], samples[...,0])
+    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    return phase
 
 def circular_var(x: torch.Tensor, dim=None):
     """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
     #R = torch.sqrt((x.mean(dim=(1,2))**2).sum(dim=1))
-    phase = torch.atan2(x[:,:,:,1], x[:,:,:,0])
-    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    phase = to_phase(x)
     
     C1 = torch.cos(phase).sum(dim=(1,2))
     S1 = torch.sin(phase).sum(dim=(1,2))
@@ -32,8 +36,7 @@ def circular_var(x: torch.Tensor, dim=None):
 
 def circular_skew(x: torch.Tensor):
     """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
-    phase = torch.atan2(x[:,:,:,1], x[:,:,:,0])
-    phase = (phase + np.pi) % (2 * np.pi) - np.pi
+    phase = to_phase(x)
     
     C1 = torch.cos(phase).sum(dim=(1,2))
     S1 = torch.sin(phase).sum(dim=(1,2))
@@ -99,7 +102,6 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
                     torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
         if verbose:
             pbar.update(1)
-            pbar.set_postfix({'norm': (x0**2).mean().item(), 'lr': alpha.item()})
     if verbose:
         pbar.close()
         
@@ -135,8 +137,8 @@ def plot_noise(samples: torch.Tensor, outfile: str, figsize=(16,4)):
     cax = fig.add_axes([ax[0][numb_fig-1].get_position().x1+0.01,
                         ax[0][numb_fig-1].get_position().y0,0.02,
                         ax[0][numb_fig-1].get_position().height])
-    plt.colorbar(bar, cax=cax)
-    plt.savefig(outfile, bbox_inches='tight')
+    fig.colorbar(bar, cax=cax, orientation='vertical')
+    fig.savefig(outfile, bbox_inches='tight')
 
 def plot_matrix(matrix: torch.Tensor, outfile: str, title: str = None, figsize=(6,6)):
     assert len(matrix.shape) == 2, "matrix should be a 2d tensor"
@@ -145,10 +147,10 @@ def plot_matrix(matrix: torch.Tensor, outfile: str, title: str = None, figsize=(
     cax = fig.add_axes([ax.get_position().x1+0.01,
                         ax.get_position().y0,0.02,
                         ax.get_position().height])
-    plt.colorbar(this_plot, cax=cax)
+    fig.colorbar(this_plot, cax=cax, orientation='vertical')
     if title is not None:
         fig.suptitle(title)
-    plt.savefig(outfile, bbox_inches='tight')
+    fig.savefig(outfile, bbox_inches='tight')
 
 def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
                  subtitles=None,
@@ -162,9 +164,7 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None,
         assert len(subtitles) == ncol
     fig, ax = plt.subplots(1, ncol, figsize=figsize)
     for j in range(ncol):
-        phase = torch.atan2(samples[j,:,:,1], 
-                            samples[j,:,:,0]).cpu().detach().numpy()
-        phase = (phase + np.pi) % (2 * np.pi) - np.pi
+        phase = to_phase(samples[j]).cpu().detach().numpy()
         bar = ax[j].imshow(phase,  
                            cmap='RdYlBu', 
                            vmin = -np.pi, 
@@ -178,8 +178,8 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None,
     )
     if title is not None:
         fig.suptitle(title)
-    plt.colorbar(bar, cax=cax) # Similar to fig.colorbar(im, cax = cax)
-    plt.savefig(outfile, bbox_inches='tight')
+    fig.colorbar(bar, cax = cax, orientation='vertical')
+    fig.savefig(outfile, bbox_inches='tight')
 
 def plot_samples_grid(samples: torch.Tensor, 
                       outfile: str, 
@@ -195,9 +195,7 @@ def plot_samples_grid(samples: torch.Tensor,
     fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
     for i in range(nrow):
         for j in range(ncol):
-            phase = torch.atan2(samples[i*nrow + j,:,:,1], 
-                                samples[i*nrow + j,:,:,0]).cpu().detach().numpy()
-            phase = (phase + np.pi) % (2 * np.pi) - np.pi
+            phase = to_phase(samples[i*nrow +j]).cpu().detach().numpy()
             bar = ax[i][j].imshow(phase,  
                             cmap='RdYlBu', 
                             vmin = -np.pi, 
@@ -207,4 +205,4 @@ def plot_samples_grid(samples: torch.Tensor,
     if title is not None:
         fig.suptitle(title)
     fig.tight_layout()
-    plt.savefig(outfile, bbox_inches='tight')
+    fig.savefig(outfile, bbox_inches='tight')

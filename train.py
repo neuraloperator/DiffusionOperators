@@ -28,7 +28,8 @@ from utils import (
     plot_noise,
     plot_samples_grid,
     plot_samples,
-    plot_matrix
+    plot_matrix,
+    to_phase
 )
 from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_RBF, IndependentGaussian
 
@@ -447,6 +448,8 @@ def run(args: Arguments, savedir: str):
         "w_skew": ValidationMetric(),
         "w_var": ValidationMetric(),
         "w_total": ValidationMetric(),
+        "mean_image_l2": ValidationMetric(),
+        "mean_image_phase_l2": ValidationMetric()
     }
     if val_metrics is not None:
         for key in val_metrics:
@@ -500,8 +503,8 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            #if iter_ == 10: # TODO add debug flag
-            #    break
+            if iter_ == 10: # TODO add debug flag
+                break
 
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
@@ -580,7 +583,11 @@ def run(args: Arguments, savedir: str):
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
-            metric_vals = {"w_skew": w_skew, "w_var": w_var, "w_total": w_total}
+            metric_vals = {
+                "w_skew": w_skew, 
+                "w_var": w_var, 
+                "w_total": w_total
+            }
 
             for ext in ["pdf", "png"]:
                 plot_samples(
@@ -592,10 +599,20 @@ def run(args: Arguments, savedir: str):
 
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.
+            this_train_mean = train_dataset.dataset.x_train.mean(dim=0, keepdim=True)
+            this_gen_mean = u.mean(dim=0, keepdim=True).detach().cpu()
+
+            mean_image_l2 = torch.mean((this_train_mean-this_gen_mean)**2)
+            metric_vals['mean_image_l2'] = mean_image_l2.item()
+
+            mean_image_phase_l2 = torch.mean(
+                (to_phase(this_train_mean)-to_phase(this_gen_mean))**2
+            )
+            metric_vals['mean_image_phase_l2'] = mean_image_phase_l2.item()
+            
             mean_samples = torch.cat(
                 (
-                    train_dataset.dataset.x_train.mean(dim=0, keepdim=True),
-                    u.mean(dim=0, keepdim=True).detach().cpu(),
+                    this_train_mean, this_gen_mean
                 ),
                 dim=0,
             )
