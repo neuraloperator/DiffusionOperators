@@ -21,7 +21,6 @@ from utils import (
     sigma_sequence,
     avg_spectrum,
     sample_trace,
-    sample_trace_jit,
     DotDict,
     circular_skew,
     circular_var,
@@ -29,7 +28,7 @@ from utils import (
     plot_samples_grid,
     plot_samples,
     plot_matrix,
-    to_phase
+    to_phase,
 )
 from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_RBF, IndependentGaussian
 
@@ -54,21 +53,27 @@ def count_params(model):
     params = sum([np.prod(p.size()) for p in model_parameters])
     return params
 
+
 from dataclasses import dataclass, field, asdict
 from typing import List, Union
 from omegaconf import OmegaConf as OC
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="")
     # parser.add_argument('--datadir', type=str, default="")
     parser.add_argument("--savedir", type=str, required=True)
     parser.add_argument("--cfg", type=str, required=True)
-    parser.add_argument("--override_cfg", action="store_true",
-        help="If this is set, then if there already exists a config.json " + \
-             "in the directory defined by savedir, load that instead of args.cfg. " + \
-             "This should be set so that SLURM does the right thing if the job is restarted.")
+    parser.add_argument(
+        "--override_cfg",
+        action="store_true",
+        help="If this is set, then if there already exists a config.json "
+        + "in the directory defined by savedir, load that instead of args.cfg. "
+        + "This should be set so that SLURM does the right thing if the job is restarted.",
+    )
     args = parser.parse_args()
     return args
+
 
 @dataclass
 class Arguments:
@@ -97,18 +102,19 @@ class Arguments:
 
     factorization: str = None
     num_freqs_input: int = 0
-    
+
     d_co_domain: int = 32
     npad: int = 8
-    mult_dims: List[int] = field(default_factory=lambda: [1,2,4,4])
+    mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4])
     fmult: float = 0.25
     rank: float = 1.0
     groups: int = 0
-    
+
     lr: float = 1e-3
     Ntest: int = 1024
     num_workers: int = 2
     ema_rate: Union[float, None] = None
+
 
 @torch.no_grad()
 def sample(
@@ -156,20 +162,20 @@ def sample(
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
 
-    
+
     Notes:
     ------
 
     For x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-    
+
       loss = || sigma_i*score_fn(x, sigma_i) + (x - x0) / sigma_i ||
            = || sigma_i*score_fn(x0+noise, sigma_i) + (x0 + noise - x0) / sigma_i||
            = || sigma_i*score_fn(x0+noise, sigma_i) + (noise) / sigma_i||
 
     If we use the trick from "Improved techniques for SBGMs" paper then:
-    
+
       loss = || score_fn(x0+noise, sigma_i) = score_fn(x0+noise) / sigma_i ||
-    
+
     which we can just implement inside the unet's forward(). This means that
     the actual loss would be:
 
@@ -192,23 +198,23 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     noise = this_sigmas * noise_sampler.sample(bsize)
     # term1 = score_fn(x0+noise)
     u_noised = u + noise
-    
+
     term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
     term2 = noise / this_sigmas
 
     # (1, s^2, s^2) -> (bs, s^2, s^2)
-    #C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
-    res_sq = u.size(1)*u.size(2)
+    # C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
+    res_sq = u.size(1) * u.size(2)
     # (bs, s^2, 2)
-    terms_flattened = (term1+term2).view(bsize, res_sq, -1)
+    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
 
-    # inv(C)*terms_flattened = 
+    # inv(C)*terms_flattened =
     # (bs, s^2, s^2) x (bs, s^2, 2) -> (bs, s^2, 2)
-    #scaled_loss = torch.bmm(C_half_inv, terms_flattened)
+    # scaled_loss = torch.bmm(C_half_inv, terms_flattened)
 
     # loss = C_inv * (sigma*score_net + noise)
-    loss = (terms_flattened ** 2).mean()
-    
+    loss = (terms_flattened**2).mean()
+
     return loss
 
 
@@ -287,7 +293,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         logger.debug("keys in chkpt: {}".format(chkpt.keys()))
         fno.load_state_dict(chkpt["weights"])
         logger.info("metrics found in chkpt: {}".format(chkpt["metrics"]))
-        val_metrics = chkpt['metrics']
+        val_metrics = chkpt["metrics"]
         if ema_helper is not None and "ema_helper" in chkpt:
             logger.info("EMA enabled, loading EMA weights...")
             ema_helper.load_state_dict(chkpt["ema_helper"])
@@ -398,14 +404,14 @@ def run(args: Arguments, savedir: str):
             ),
         )
         plot_matrix(
-            init_sampler.C[0:200, 0:200], 
+            init_sampler.C[0:200, 0:200],
             os.path.join(
                 savedir,
                 "noise",
                 # implicit that sigma here == 1.0
                 "init_sampler_C.{}".format(ext),
             ),
-            title="init_sampler.C[0:200,0:200]"
+            title="init_sampler.C[0:200,0:200]",
         )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ["png", "pdf"]:
@@ -419,14 +425,14 @@ def run(args: Arguments, savedir: str):
             ),
         )
         plot_matrix(
-            noise_sampler.C[0:200,0:200], 
+            noise_sampler.C[0:200, 0:200],
             os.path.join(
                 savedir,
                 "noise",
                 # implicit that sigma here == 1.0
                 "noise_sampler_C.{}".format(ext),
             ),
-            title="noise_sampler.C[0:200,0:200]"
+            title="noise_sampler.C[0:200,0:200]",
         )
 
     # Save config file
@@ -449,7 +455,7 @@ def run(args: Arguments, savedir: str):
         "w_var": ValidationMetric(),
         "w_total": ValidationMetric(),
         "mean_image_l2": ValidationMetric(),
-        "mean_image_phase_l2": ValidationMetric()
+        "mean_image_phase_l2": ValidationMetric(),
     }
     if val_metrics is not None:
         for key in val_metrics:
@@ -503,8 +509,8 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            if iter_ == 10: # TODO add debug flag
-                break
+            # if iter_ == 10: # TODO add debug flag
+            #    break
 
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
@@ -559,9 +565,8 @@ def run(args: Arguments, savedir: str):
 
         # scheduler.step()
 
-        recorded = False
+        metric_vals = {} # store validation metrics
         if (ep + 1) % args.record_interval == 0:
-            recorded = True
 
             with ema_helper:
                 # This context mgr automatically applies EMA
@@ -583,11 +588,7 @@ def run(args: Arguments, savedir: str):
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
-            metric_vals = {
-                "w_skew": w_skew, 
-                "w_var": w_var, 
-                "w_total": w_total
-            }
+            metric_vals = {"w_skew": w_skew, "w_var": w_var, "w_total": w_total}
 
             for ext in ["pdf", "png"]:
                 plot_samples(
@@ -602,18 +603,16 @@ def run(args: Arguments, savedir: str):
             this_train_mean = train_dataset.dataset.x_train.mean(dim=0, keepdim=True)
             this_gen_mean = u.mean(dim=0, keepdim=True).detach().cpu()
 
-            mean_image_l2 = torch.mean((this_train_mean-this_gen_mean)**2)
-            metric_vals['mean_image_l2'] = mean_image_l2.item()
+            mean_image_l2 = torch.mean((this_train_mean - this_gen_mean) ** 2)
+            metric_vals["mean_image_l2"] = mean_image_l2.item()
 
             mean_image_phase_l2 = torch.mean(
-                (to_phase(this_train_mean)-to_phase(this_gen_mean))**2
+                (to_phase(this_train_mean) - to_phase(this_gen_mean)) ** 2
             )
-            metric_vals['mean_image_phase_l2'] = mean_image_phase_l2.item()
-            
+            metric_vals["mean_image_phase_l2"] = mean_image_phase_l2.item()
+
             mean_samples = torch.cat(
-                (
-                    this_train_mean, this_gen_mean
-                ),
+                (this_train_mean, this_gen_mean),
                 dim=0,
             )
             plot_samples(
@@ -671,10 +670,7 @@ def run(args: Arguments, savedir: str):
         buf["lr"] = optimizer.state_dict()["param_groups"][0]["lr"]
         buf["time"] = default_timer() - t1
         # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
-        if recorded:
-            buf["w_skew"] = w_skew
-            buf["w_var"] = w_var
-            buf["w_total"] = w_skew + w_var
+        buf.update(metric_vals)
         f_write.write(json.dumps(buf) + "\n")
         f_write.flush()
         print(json.dumps(buf))
