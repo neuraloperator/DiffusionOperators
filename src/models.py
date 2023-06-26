@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from run_nerf_helpers import get_embedder
+from .util.run_nerf_helpers import get_embedder
 
 from einops import rearrange, reduce
 
@@ -14,12 +14,12 @@ from functools import partial
 from typing import List, Union
 
 # from neuralop.models.tfno import FactorizedFNO1d, FactorizedFNO2d
-from time_embedding import TimestepEmbedding
+from .util.time_embedding import TimestepEmbedding
 
 from neuralop.models.fno_block import FNOBlocks
 from neuralop.models.spectral_convolution import FactorizedSpectralConv
 
-from setup_logger import get_logger
+from .util.setup_logger import get_logger
 
 logger = get_logger(__name__)
 

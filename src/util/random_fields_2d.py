@@ -5,15 +5,13 @@ import cv2
 import math
 import os
 
-from setup_logger import get_logger
+from .setup_logger import get_logger
 
 logger = get_logger(__name__)
 
-from math_utils import MPA_Lya, MPA_Lya_Inv
-
+from .math_utils import MPA_Lya, MPA_Lya_Inv
 FastMatSqrt = MPA_Lya.apply
 FastInvSqrt = MPA_Lya_Inv.apply
-
 
 class PeriodicGaussianRF2d(object):
     def __init__(

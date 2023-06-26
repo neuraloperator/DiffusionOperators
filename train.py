@@ -1,49 +1,37 @@
-import torch
-from torch.utils.data import DataLoader, TensorDataset, Dataset, Subset
-from torchvision.utils import save_image
-from torchvision import transforms
-import random
-import math
-import os
 import argparse
 import json
+import math
+import os
 import pickle
-
-from scipy.stats import wasserstein_distance as w_distance
-
 from timeit import default_timer
+from dataclasses import asdict, dataclass, field
+from typing import List, Union
+from omegaconf import OmegaConf as OC
 
-from datasets import VolcanoDataset
+import torch
+from scipy.stats import wasserstein_distance as w_distance
+from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
+from torchvision import transforms
 
-from ema import EMAHelper
+from src.datasets import VolcanoDataset
+from src.models import UNO
+from src.util.ema import EMAHelper
+from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
+                                       PeriodicGaussianRF2d)
+from src.util.setup_logger import get_logger
+from src.util.utils import (DotDict, avg_spectrum, circular_skew, circular_var,
+                            plot_matrix, plot_noise, plot_samples,
+                            plot_samples_grid, sample_trace, sigma_sequence,
+                            to_phase)
 
-from utils import (
-    sigma_sequence,
-    avg_spectrum,
-    sample_trace,
-    DotDict,
-    circular_skew,
-    circular_var,
-    plot_noise,
-    plot_samples_grid,
-    plot_samples,
-    plot_matrix,
-    to_phase,
-)
-from random_fields_2d import PeriodicGaussianRF2d, GaussianRF_RBF, IndependentGaussian
-
-# from models import FNO2d, UNO
-from models import UNO
+logger = get_logger(__name__)
 
 import numpy as np
+from tqdm import tqdm
 
 # import scipy.io
 
-from tqdm import tqdm
 
-from setup_logger import get_logger
-
-logger = get_logger(__name__)
 
 device = torch.device("cuda:0")
 
@@ -53,10 +41,6 @@ def count_params(model):
     params = sum([np.prod(p.size()) for p in model_parameters])
     return params
 
-
-from dataclasses import dataclass, field, asdict
-from typing import List, Union
-from omegaconf import OmegaConf as OC
 
 
 def parse_args():
@@ -78,42 +62,45 @@ def parse_args():
 @dataclass
 class Arguments:
 
-    batch_size: int = 16
-    val_batch_size: int = 512
-    epochs: int = 100
-    val_size: float = 0.1
-    record_interval: int = 100
-    white_noise: bool = False
-    augment: bool = False
-    n_critic: int = 10
+    batch_size: int = 16            # training batch size
+    val_batch_size: int = 512       # validation batch size
+    epochs: int = 100               #
+    val_size: float = 0.1           # size of validation set (e.g. 0.1 = 10%)
+    record_interval: int = 100      # eval valid metrics every this many epochs
+    white_noise: bool = False       # use white noise instead of RBF
+    augment: bool = False           # perform light data augmentation
 
-    sigma_x0: float = 1.0
-    schedule: str = None
+    schedule: str = None            # either 'geometric' or 'linear'
 
-    white_noise: bool = False
-    epsilon: float = 2e-5
-    sigma_1: float = 1.0
-    sigma_L: float = 0.01
-    T: int = 100
-    L: int = 10
+    epsilon: float = 2e-5           # step size to use during generation (SGLD)
+    sigma_1: float = 1.0            # variance of largest noise distribution
+    sigma_L: float = 0.01           # variance of smallest noise distribution
+    T: int = 100                    # how many SGLD steps to do per noise schedule
+    L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
 
-    rbf_scale: float = 1.0
-    rbf_eps: float = 0.01
+    rbf_scale: float = 1.0          # scale parameter of the RBF kernel (determines smoothness)
+    rbf_eps: float = 0.01           # stability term for cholesky decomposition of covariance C
 
-    factorization: str = None
-    num_freqs_input: int = 0
+    factorization: str = None       # factorization, a specific kwarg in FNOBlocks
+    num_freqs_input: int = 0        # not used currently
 
-    d_co_domain: int = 32
-    npad: int = 8
-    mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4])
+    d_co_domain: int = 32           # UNO lifts input into this dimension
+    npad: int = 8                   # input padding in UNO
+    mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4]) # ngf
+
+    # multiplier to reduce the number of Fourier modes.
+    # For instance, 1.0 means the maximal possible number will be used,
+    # and 0.5 means only half will be used. Larger numbers correspond
+    # to more parameters / memory.
     fmult: float = 0.25
-    rank: float = 1.0
-    groups: int = 0
+    
+    rank: float = 1.0               # rank coefficient, a specific kwarg in FNOBlocks
+    groups: int = 0                 # number of groups for group norm
 
-    lr: float = 1e-3
-    Ntest: int = 1024
-    num_workers: int = 2
-    ema_rate: Union[float, None] = None
+    lr: float = 1e-3                # learning rate for training
+    Ntest: int = 1024               # number of samples to compute for validation metrics
+    num_workers: int = 2            # number of cpu workers
+    ema_rate: Union[float, None] = None # moving average coefficient for EMA
 
 
 @torch.no_grad()

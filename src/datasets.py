@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 import glob
 import numpy as np
 
-from setup_logger import get_logger
+from .util.setup_logger import get_logger
 logger = get_logger(__name__)
 
 class VolcanoDataset(Dataset):
