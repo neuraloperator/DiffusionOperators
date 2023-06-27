@@ -74,6 +74,7 @@ class Arguments:
     factorization: str = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
 
+    resolution: Union[int, None] = None    # resolution of the dataset. if none, use dataset default
     d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
     npad: int = 8                   # input padding in UNO
     mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4]) # ngf
@@ -201,15 +202,19 @@ def init_model(args, savedir, checkpoint="model.pt"):
     datadir = os.environ.get("DATA_DIR", None)
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
+    
     if args.augment:
         transform = transforms.Compose(
             [
+                transforms.Resize(args.resolution) if args.resolution is not None \
+                    else transforms.Lambda(lambda x: x),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomVerticalFlip(p=0.5),
             ]
         )
     else:
         transform = None
+    logger.debug("transform: {}".format(transform))
     full_dataset = VolcanoDataset(root=datadir, npad=args.npad, transform=transform)
     rnd_state = np.random.RandomState(seed=0)
     dataset_idcs = np.arange(0, len(full_dataset))
@@ -227,7 +232,14 @@ def init_model(args, savedir, checkpoint="model.pt"):
     # Initialise the model
     
     #s = 128 - args.npad
-    res = full_dataset.resolution
+    if args.resolution is None:
+        # If not explicitly passed, take the image size from
+        # the dataset.
+        res = full_dataset.resolution
+    else:
+        # If explicitly passed in the args, this is the correct
+        # resolution.
+        res = args.resolution
     logger.debug("dataset resolution: {}, padding = {}".format(res, args.npad))
     fno = UNO(
         2,

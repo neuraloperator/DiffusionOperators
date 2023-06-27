@@ -1,0 +1,129 @@
+* NO_Diffusion
+
+** Introduction
+
+Five validation metrics were considered for these experiments:
+
+- (1) The Wasserstein distance between the variance from the training set vs generated samples, referred to in code as =w_var=
+- (2) The Wasserstein distance between the skew from the training set vs generated samples, referred to as =w_skew=
+- (3) The sum of the above, called =w_total=
+- (4) The L2 between the mean generated image and the mean training set image (not used)
+- (5) but computed in phase space (not used)
+
+When an experiment is run, validation metrics will be computed over the validation set every =record_interval= epochs. Experiments keep track of the smallest value of each of the five described validation metrics, and checkpoints are saved whenever a new smallest value is obtained.
+
+** Installation
+
+This codebase was written assuming a Slurm controller for running experiments.
+
+Requirements are:
+- PyTorch
+
+Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. This file will need to be modified to reflect the desired environment that you need to run the code. In my case, I have loaded modules specific to my environment at Mila as well as activate a miniconda environment which has PyTorch and other dependencies set up.
+
+#+begin_src bash
+
+# <load any modules / envs here>
+# ...
+
+# directory to save results to
+export SAVEDIR="/home/mila/b/beckhamc/scratch/results/no_diffusion"
+# directory where volcano data is
+export DATA_DIR="/home/mila/b/beckhamc/scratch/datasets/volcano
+
+#+end_src
+
+** Running experiments
+
+To run an experiment /locally/, simply cd into =exps= and run:
+
+#+begin_src 
+RUN_LOCAL=1 bash main.sh <experiment name> <json file>
+#+end_src
+
+This will run an experiment whose results directory will be created in =$SAVEDIR/<slurm job id>/<experiment name>= with hyperparameters selected from =<json file>=. The =RUN_LOCAL= command simply says that the code should be run from the parent directory of =exps=, rather than copy the code over to =$SAVEDIR/<id>/<experiment name>= and run from there (the latter should only be done when an actual experiment is being launched from Slurm).
+
+If you are not running this on a Slurm job, then you should also define =SLURM_JOB_ID= to something random before you run an experiment, like so:
+
+#+begin_src 
+RUN_LOCAL=1 SLURM_JOB_ID=123456 bash main.sh <experiment name> <json file>
+#+end_src
+
+In the directory, the following things are saved periodically:
+- =noise/noise_samples.{pdf,png}=: samples from the noise distribution. If you are using RBF noise (i.e. =white_noise=False=) then you can play around with =rbf_scale= and see how that affects the smoothness of the noise samples.
+- =noise/init_samples.{pdf,png}=: ignore this, it should be the same as the above.
+- =noise/noise_sampler_C.{pdf,png}=: the first 200 cols/rows of the computed covariance matrix.
+- =u_noised.png=: for a random image (function) from the training set =u=, show the function =u + c * z=, where =c= is a coefficient from =σ_1= to =σ_L= and =z= is a sample from the noise distribution.
+- =samples/<epoch>.{pdf,png}=: samples generated from the model after this particular epoch of training.
+
+For Slurm-enabled clusters, simply run:
+
+#+begin_src 
+sbatch launch_exp.sh <experiment name> <json file>
+#+end_src
+
+Note that the SBATCH flags at the top of =launch_exp.sh= should be modified according to what is appropriate for your cluster environment (e.g. GPU selected, available memory, etc.).
+
+** Reproducing experiments
+
+*** Baseline experiment (independent noise)
+
+Run:
+
+#+begin_src
+sbatch launch_exp.sh indep_experiment json/indep-copied.json
+#+end_src
+
+(If you are not using Slurm, simply set SLURM_JOB_ID to something random and launch with =bash= instead of =sbatch=.)
+
+*** RBF experiment (structured noise)
+
+#+begin_src bash
+sbatch launch_exp.sh rbf_experiment json/rbf-copied.json
+#+end_src
+
+(If you are not using Slurm, simply set SLURM_JOB_ID to something random and launch with =bash= instead of =sbatch=.)
+
+
+** Evaluation
+
+We have a separate evaluation script which can be used to generate a larger set of samples, as well as a larger set of generated examples from which histograms for variance and skew can be computed.
+
+Here is an example script which loads in the pretrained model corresponding to the best value of =w_total=, and generates 1024 samples with a batch size of 128. This will take a while.
+
+#+begin_src 
+python eval.py --exp_name=${SAVEDIR}/${EXP_NAME} \
+--Ntest=1024 \
+--val_batch_size=128 \
+--savedir="${SAVEDIR}/${EXP_NAME}/eval" \
+--mode=generate \
+--checkpoint="model.w_total.pt"
+#+end_src
+
+To generate plots corresponding to various files produced by this, simply replace mode=generate with mode=plot.
+
+Some things to note:
+
+- Computing the validation metrics takes a long time, even more so if =Ntest= is large. For our experiments, we use =256= which can still take a while, depending on what the validation batch size is used.
+
+*** Baseline experiment
+
+Download the pre-trained checkpoint here.
+
+#+begin_src bash
+bash launch_eval.py ...
+#+end_src
+
+*** RBF experiment
+
+Download the pretrained checkpoint here.
+
+#+begin_src bash
+bash launch_eval.py ...
+#+end_src
+
+Here are some examples: ...
+
+** Future work
+
+- One way in which quality of life can be significantly improved is to consider sampling algorithms for diffusion which are faster without sacrificing sample quality.
