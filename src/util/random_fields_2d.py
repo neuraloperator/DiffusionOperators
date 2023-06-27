@@ -6,12 +6,8 @@ import math
 import os
 
 from .setup_logger import get_logger
-
 logger = get_logger(__name__)
 
-from .math_utils import MPA_Lya, MPA_Lya_Inv
-FastMatSqrt = MPA_Lya.apply
-FastInvSqrt = MPA_Lya_Inv.apply
 
 class PeriodicGaussianRF2d(object):
     def __init__(
@@ -157,7 +153,7 @@ class GaussianRF_RBF(object):
 
     @torch.no_grad()
     def __init__(
-        self, Ln1, Ln2, scale=1, eps=0.01, fast_sqrt=False, device=None, cached=True
+        self, Ln1, Ln2, scale=1, eps=0.01, device=None
     ):
         self.Ln1 = Ln1
         self.Ln2 = Ln2

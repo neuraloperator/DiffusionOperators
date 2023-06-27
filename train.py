@@ -19,10 +19,10 @@ from src.util.ema import EMAHelper
 from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
                                        PeriodicGaussianRF2d)
 from src.util.setup_logger import get_logger
-from src.util.utils import (DotDict, avg_spectrum, circular_skew, circular_var,
+from src.util.utils import (DotDict, count_params, avg_spectrum, circular_skew, circular_var,
                             plot_matrix, plot_noise, plot_samples,
                             plot_samples_grid, sample_trace, sigma_sequence,
-                            to_phase)
+                            to_phase, ValidationMetric)
 
 logger = get_logger(__name__)
 
@@ -31,17 +31,7 @@ from tqdm import tqdm
 
 # import scipy.io
 
-
-
 device = torch.device("cuda:0")
-
-
-def count_params(model):
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([np.prod(p.size()) for p in model_parameters])
-    return params
-
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="")
@@ -84,7 +74,7 @@ class Arguments:
     factorization: str = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
 
-    d_co_domain: int = 32           # UNO lifts input into this dimension
+    d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
     npad: int = 8                   # input padding in UNO
     mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4]) # ngf
 
@@ -105,7 +95,7 @@ class Arguments:
 
 @torch.no_grad()
 def sample(
-    fno, init_sampler, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
 ):
     buf = []
     if fns is not None:
@@ -113,10 +103,8 @@ def sample(
 
     n_batches = int(math.ceil(n_examples / bs))
 
-    print(n_batches, n_examples, bs, "<<<")
-
     for _ in range(n_batches):
-        u = init_sampler.sample(bs)
+        u = noise_sampler.sample(bs)
         res = u.size(1)
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
@@ -171,10 +159,6 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     The sigmas for the first term cancel out and we finally obtain:
 
       loss = || score_fn(x0+noise) + noise/sigma_i||
-
-    Don't forget for the new loss fn we need to dot product by C_half_inv:
-
-      loss_rbf = || C_half_inv*(score_fn(x0+noise) + noise/sigma_i) ||
     """
 
     bsize = u.size(0)
@@ -226,7 +210,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         )
     else:
         transform = None
-    full_dataset = VolcanoDataset(root=datadir, transform=transform)
+    full_dataset = VolcanoDataset(root=datadir, npad=args.npad, transform=transform)
     rnd_state = np.random.RandomState(seed=0)
     dataset_idcs = np.arange(0, len(full_dataset))
     rnd_state.shuffle(dataset_idcs)
@@ -241,11 +225,14 @@ def init_model(args, savedir, checkpoint="model.pt"):
     )
 
     # Initialise the model
-    s = 128 - 8
+    
+    #s = 128 - args.npad
+    res = full_dataset.resolution
+    logger.debug("dataset resolution: {}, padding = {}".format(res, args.npad))
     fno = UNO(
         2,
         args.d_co_domain,
-        s=s,
+        s=res, # e.g. 120px
         pad=args.npad,
         fmult=args.fmult,
         groups=args.groups,
@@ -292,15 +279,11 @@ def init_model(args, savedir, checkpoint="model.pt"):
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
         logger.warning("Using independent Gaussian noise, NOT grf noise...")
-        noise_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
-        init_sampler = IndependentGaussian(s, s, sigma=1.0, device=device)
+        noise_sampler = IndependentGaussian(res, res, sigma=1.0, device=device)
     else:
         logger.debug("Initialising noise and init sampler...")
         noise_sampler = GaussianRF_RBF(
-            s, s, scale=args.rbf_scale, eps=args.rbf_eps, device=device
-        )
-        init_sampler = GaussianRF_RBF(
-            s, s, scale=args.rbf_scale, eps=args.rbf_eps, device=device
+            res, res, scale=args.rbf_scale, eps=args.rbf_eps, device=device
         )
         logger.debug("... done noise and init samplers")
 
@@ -330,26 +313,8 @@ def init_model(args, savedir, checkpoint="model.pt"):
         start_epoch,
         val_metrics,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        (noise_sampler, sigma),
     )
-
-
-class ValidationMetric:
-    def __init__(self):
-        self.best = np.inf
-
-    def update(self, x):
-        """Return true if the metric is the best so far, else false"""
-        if x < self.best:
-            self.best = x
-            return True
-        return False
-
-    def state_dict(self):
-        return {"best": self.best}
-
-    def load_state_dict(self, dd):
-        self.best = dd["best"]
 
 
 def run(args: Arguments, savedir: str):
@@ -361,7 +326,7 @@ def run(args: Arguments, savedir: str):
         start_epoch,
         val_metrics,
         (train_dataset, valid_dataset),
-        (init_sampler, noise_sampler, sigma),
+        (noise_sampler, sigma),
     ) = init_model(args, savedir)
 
     # with ema_helper:
@@ -380,26 +345,6 @@ def run(args: Arguments, savedir: str):
         num_workers=args.num_workers,
     )
 
-    init_samples = init_sampler.sample(5).cpu()
-    for ext in ["png", "pdf"]:
-        plot_noise(
-            init_samples,
-            os.path.join(
-                savedir,
-                "noise",
-                "init_samples.{}".format(ext),
-            ),
-        )
-        plot_matrix(
-            init_sampler.C[0:200, 0:200],
-            os.path.join(
-                savedir,
-                "noise",
-                # implicit that sigma here == 1.0
-                "init_sampler_C.{}".format(ext),
-            ),
-            title="init_sampler.C[0:200,0:200]",
-        )
     noise_samples = noise_sampler.sample(5).cpu()
     for ext in ["png", "pdf"]:
         plot_noise(
@@ -411,16 +356,17 @@ def run(args: Arguments, savedir: str):
                 "noise_samples.{}".format(ext),
             ),
         )
-        plot_matrix(
-            noise_sampler.C[0:200, 0:200],
-            os.path.join(
-                savedir,
-                "noise",
-                # implicit that sigma here == 1.0
-                "noise_sampler_C.{}".format(ext),
-            ),
-            title="noise_sampler.C[0:200,0:200]",
-        )
+        if hasattr(noise_sampler, 'C'):
+            plot_matrix(
+                noise_sampler.C[0:200, 0:200],
+                os.path.join(
+                    savedir,
+                    "noise",
+                    # implicit that sigma here == 1.0
+                    "noise_sampler_C.{}".format(ext),
+                ),
+                title="noise_sampler.C[0:200,0:200]",
+            )
 
     # Save config file
     with open(os.path.join(savedir, "config.json"), "w") as f:
@@ -521,7 +467,7 @@ def run(args: Arguments, savedir: str):
                     logger.info(os.path.join(savedir, "u_prior.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
-                        init_sampler.sample(16),
+                        noise_sampler.sample(16),
                         outfile=os.path.join(savedir, "u_prior.png"),
                         figsize=(8, 8),
                     )
@@ -559,7 +505,6 @@ def run(args: Arguments, savedir: str):
                 # This context mgr automatically applies EMA
                 u, fn_outs = sample(
                     fno,
-                    init_sampler,
                     noise_sampler,
                     sigma,
                     bs=args.val_batch_size,

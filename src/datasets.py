@@ -8,11 +8,11 @@ logger = get_logger(__name__)
 
 class VolcanoDataset(Dataset):
 
-    def __init__(self, root, ntrain=4096, transform=None):
+    def __init__(self, root, ntrain=4096, npad=8, transform=None):
 
         super().__init__()
 
-        res = 128-8
+        res = 128-npad
         files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
         if len(files) == 0:
             raise Exception("Cannot find any *.int files here.")
@@ -37,6 +37,11 @@ class VolcanoDataset(Dataset):
 
         self.x_train = x_train
         self.transform = transform
+        self.res = res
+
+    @property
+    def resolution(self):
+        return self.res
 
     def _to_fhw(self, x):
         """Convert x into format (f, h, w)"""

@@ -6,6 +6,24 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+class ValidationMetric:
+    def __init__(self):
+        self.best = np.inf
+
+    def update(self, x):
+        """Return true if the metric is the best so far, else false"""
+        if x < self.best:
+            self.best = x
+            return True
+        return False
+
+    def state_dict(self):
+        return {"best": self.best}
+
+    def load_state_dict(self, dd):
+        self.best = dd["best"]
+
+
 class DotDict(dict):
     """
     a dictionary that supports dot notation 
@@ -73,6 +91,11 @@ def rescale(z, min_, max_):
 
 def format_tuple(x, y):
     return "({:.3f}, {:.3f})".format(x, y)
+
+def count_params(model):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    return params
 
 def sample_white(score, sigma, x0, epsilon=2e-5, T=200):
     L = sigma.size(0)

@@ -7,7 +7,6 @@ from .util.run_nerf_helpers import get_embedder
 
 from einops import rearrange, reduce
 
-import copy
 import math
 
 from functools import partial
@@ -98,7 +97,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         super().__init__()
         self.dim = dim
 
-    def forward(self, time):
+    def forward(self, time: torch.Tensor):
         device = time.device
         half_dim = self.dim // 2
         embeddings = math.log(10000) / (half_dim - 1)
@@ -165,16 +164,8 @@ class UNO(nn.Module):
 
         time_dim = d_co_domain * 4
 
-        # dim_grid = 2
-        ##embedder, dim_grid = get_embedder(num_freqs_input, input_dims=in_d_co_domain)
-        # self.embedder = embedder
-        # self.dim_grid = dim_grid
-        # dim_grid = 0
-
         dim_grid = 0
         self.init_conv = nn.Conv2d(in_d_co_domain + 2, d_co_domain, 1, padding=0)
-
-        # self.fc0 = nn.Linear(self.in_d_co_domain, self.d_co_domain) # input channel is 3: (a(x, y), x, y)
 
         A = mult_dims
 
@@ -282,7 +273,11 @@ class UNO(nn.Module):
         self.final_conv = nn.Conv2d(self.d_co_domain * 2, 2, 1, padding=0)
 
     def forward(
-        self, x: torch.FloatTensor, t: torch.LongTensor, sigmas: torch.FloatTensor
+        self,
+        x: torch.FloatTensor,
+        t: torch.LongTensor,
+        sigmas: torch.FloatTensor,
+        padding: int = None
     ):
         """
         Args:
@@ -324,9 +319,12 @@ class UNO(nn.Module):
 
         # grid = grid.permute(0,3,1,2)
 
+        if padding is None:
+            padding = self.padding
+
         # x_fc0 = self.fc0(x)
         # x_fc0 = F.gelu(x_fc0)
-        x_fc0 = F.pad(x_fc0, [0, self.padding, 0, self.padding])
+        x_fc0 = F.pad(x_fc0, [0, padding, 0, padding])
 
         x_c0 = self.block1(x_fc0, t_emb, grid)
         x_c1 = self.block2(x_c0, t_emb, grid)
@@ -351,7 +349,7 @@ class UNO(nn.Module):
         x_c6 = x_c5
 
         if self.padding != 0:
-            x_c6 = x_c6[..., : -self.padding, : -self.padding]
+            x_c6 = x_c6[..., : -padding, : -padding]
 
         x_c6 = self.final_conv(x_c6)
 
