@@ -1,4 +1,5 @@
 import torch
+from torch.nn import functional as F
 from torch.utils.data import Dataset
 import glob
 import numpy as np
@@ -6,13 +7,45 @@ import numpy as np
 from .util.setup_logger import get_logger
 logger = get_logger(__name__)
 
-class VolcanoDataset(Dataset):
+# TODO
+# dataset should have .X method, .resolution
 
-    def __init__(self, root, ntrain=4096, npad=8, transform=None):
+class FunctionDataset(Dataset):
+    """
+    This abstraction was created for the following reasons:
+    - To make it clear that the original dataset gets cropped.
+    - To provide convenience functions for cropping the dataset.
+    - To record the 'amount' of the image cropped out (the 'padding')
+      as well as the actual resolution of the image.
+    """
+    
+    @property
+    def X(self) -> torch.Tensor:
+        raise NotImplementedError("This method should return X, a torch tensor for the dataset")
+    
+    @property
+    def resolution(self) -> int:
+        raise NotImplementedError("This method should return the spatial dimension of the dataset")
+
+class VolcanoDataset(FunctionDataset):
+    """
+    The resolution of this dataset is 120x120px, obtained by loading in
+      the original 128x128 data and cropping out a 120x120 region from 
+      the top left corner of the image.
+
+    Notes
+    -----
+
+    (Chris B): The cropping decision is weird, why not just center
+      crop from the middle, i.e. crop by npad//2 for each edge???
+      If we want to emulate what a padded conv does then we should
+      be padding each edge as well.
+    """
+
+    def __init__(self, root, ntrain=4096, resolution=None, crop=8, transform=None):
 
         super().__init__()
 
-        res = 128-npad
         files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
         if len(files) == 0:
             raise Exception("Cannot find any *.int files here.")
@@ -20,28 +53,42 @@ class VolcanoDataset(Dataset):
         if len(files) != ntrain:
             raise ValueError("ntrain=={} but we only detected {} files".\
                 format(ntrain, len(files)))
+        if resolution is None:
+            resolution = 128
 
-        x_train = torch.zeros(ntrain, res, res, 2).float()
-        nline = 128
-        nsamp = 128
+        actual_res = resolution - crop
+        X_buf = torch.zeros(ntrain, 2, 128, 128).float()
         for i, f in enumerate(files):
             dtype = np.float32
 
             with open(f, 'rb') as fn:
                 load_arr = np.frombuffer(fn.read(), dtype=dtype)
-                img = np.array(load_arr.reshape((nline, nsamp, -1)))
+                img = np.array(load_arr.reshape((128, 128, -1)))
 
-            phi = np.angle(img[:,:,0] + img[:,:,1]*1j)
-            x_train[i,:,:,0] = torch.cos(torch.tensor(phi[:res, :res]))
-            x_train[i,:,:,1] = torch.sin(torch.tensor(phi[:res, :res]))
+            phi = np.angle(img[:,:,0] + img[:,:,1]*1j)            
+            X_buf[i,0,:,:] = torch.cos(torch.tensor(phi))
+            X_buf[i,1,:,:] = torch.sin(torch.tensor(phi))
 
-        self.x_train = x_train
+        X_buf = F.interpolate(X_buf, size=(resolution, resolution),
+                              mode='bilinear')
+        X_buf = X_buf[:, :, :actual_res, :actual_res].\
+            transpose(1, 2).transpose(2, 3)
+
+        self.x_train = X_buf
         self.transform = transform
-        self.res = res
+        self.crop = crop
 
     @property
-    def resolution(self):
-        return self.res
+    def X(self):
+        return self.x_train
+
+    @property
+    def npad(self):
+        return self.padding
+
+    @property
+    def res(self):
+        return self.x_train.size(1)
 
     def _to_fhw(self, x):
         """Convert x into format (f, h, w)"""

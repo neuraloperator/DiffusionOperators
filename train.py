@@ -62,6 +62,9 @@ class Arguments:
 
     schedule: str = None            # either 'geometric' or 'linear'
 
+    resolution: Union[int, None] = None # dataset resolution
+    npad: int = 8                   # how much input padding in UNO
+
     epsilon: float = 2e-5           # step size to use during generation (SGLD)
     sigma_1: float = 1.0            # variance of largest noise distribution
     sigma_L: float = 0.01           # variance of smallest noise distribution
@@ -74,9 +77,8 @@ class Arguments:
     factorization: str = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
 
-    resolution: Union[int, None] = None    # resolution of the dataset. if none, use dataset default
+    scale_factor: float = 1.0       # if < 1, downsize dataset by this amount.
     d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
-    npad: int = 8                   # input padding in UNO
     mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4]) # ngf
 
     # multiplier to reduce the number of Fourier modes.
@@ -206,8 +208,6 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if args.augment:
         transform = transforms.Compose(
             [
-                transforms.Resize(args.resolution) if args.resolution is not None \
-                    else transforms.Lambda(lambda x: x),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomVerticalFlip(p=0.5),
             ]
@@ -215,36 +215,33 @@ def init_model(args, savedir, checkpoint="model.pt"):
     else:
         transform = None
     logger.debug("transform: {}".format(transform))
-    full_dataset = VolcanoDataset(root=datadir, npad=args.npad, transform=transform)
+    dataset = VolcanoDataset(
+        root=datadir, 
+        resolution=args.resolution,
+        crop=args.npad,
+        transform=transform
+    )
     rnd_state = np.random.RandomState(seed=0)
-    dataset_idcs = np.arange(0, len(full_dataset))
+    dataset_idcs = np.arange(0, len(dataset))
     rnd_state.shuffle(dataset_idcs)
     train_dataset = Subset(
-        full_dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
+        dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
     )
     valid_dataset = Subset(
-        full_dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
+        dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
     )
     logger.info(
         "Len of train / valid: {} / {}".format(len(train_dataset), len(valid_dataset))
     )
 
     # Initialise the model
-    
-    #s = 128 - args.npad
-    if args.resolution is None:
-        # If not explicitly passed, take the image size from
-        # the dataset.
-        res = full_dataset.resolution
-    else:
-        # If explicitly passed in the args, this is the correct
-        # resolution.
-        res = args.resolution
-    logger.debug("dataset resolution: {}, padding = {}".format(res, args.npad))
+    logger.debug("res: {}, crop = {}, dataset.x_train = {}".format(
+        args.resolution, args.npad, dataset.x_train.shape
+    ))
     fno = UNO(
         2,
         args.d_co_domain,
-        s=res, # e.g. 120px
+        s=dataset.res,
         pad=args.npad,
         fmult=args.fmult,
         groups=args.groups,
@@ -291,11 +288,11 @@ def init_model(args, savedir, checkpoint="model.pt"):
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
         logger.warning("Using independent Gaussian noise, NOT grf noise...")
-        noise_sampler = IndependentGaussian(res, res, sigma=1.0, device=device)
+        noise_sampler = IndependentGaussian(dataset.res, dataset.res, sigma=1.0, device=device)
     else:
         logger.debug("Initialising noise and init sampler...")
         noise_sampler = GaussianRF_RBF(
-            res, res, scale=args.rbf_scale, eps=args.rbf_eps, device=device
+            dataset.res, dataset.res, scale=args.rbf_scale, eps=args.rbf_eps, device=device
         )
         logger.debug("... done noise and init samplers")
 
@@ -426,7 +423,6 @@ def run(args: Arguments, savedir: str):
             """
             u, fn_outs = sample(
                 fno,
-                init_sampler,
                 noise_sampler,
                 sigma,
                 bs=args.val_batch_size,

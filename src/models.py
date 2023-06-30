@@ -5,7 +5,7 @@ import numpy as np
 
 from .util.run_nerf_helpers import get_embedder
 
-from einops import rearrange, reduce
+#from einops import rearrange, reduce
 
 import math
 
