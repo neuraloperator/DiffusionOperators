@@ -16,7 +16,7 @@ from src.util.utils import (
     rescale,
 )
 
-from train import init_model, sample
+from train import init_model, sample, get_dataset
 
 from src.util.setup_logger import get_logger
 logger = get_logger(__name__)
@@ -114,75 +114,126 @@ if __name__ == "__main__":
 
     elif args.mode == 'superres':
 
-        res = train_dataset.dataset.resolution
+        logger.info("Initialise 2x dataset and save stats...")
+        
+        # We need to initialise a version of the train_dataset that is
+        # twice as large, since this will be our ground truth dataset.
+        cfg_2x = DotDict(cfg.copy())
+        cfg_2x['resolution'] *= 2       # e.g. 64px -> 128px
+        cfg_2x['npad'] *= 2             # e.g. 4 -> 8
+        train_dataset_2x, _ = get_dataset(cfg_2x)
+        # Compute the circular variance and skew on the training set
+        # and save this to the experiment folder.
+        var_train = circular_var(train_dataset_2x.dataset.x_train).numpy()
+        skew_train = circular_skew(train_dataset_2x.dataset.x_train).numpy()
+        with open(os.path.join(args.savedir, "gt_stats_2x.pkl"), "wb") as f:
+            pickle.dump(dict(var=var_train, skew=skew_train), f)
 
-        noise_sampler = GaussianRF_RBF(
-            res, res, scale=cfg.rbf_scale, eps=cfg.rbf_eps, device=device
+        logger.info("Generating...")
+
+        res = train_dataset.dataset.res
+
+        noise_sampler_2x = GaussianRF_RBF(
+            res*2, res*2, scale=cfg.rbf_scale, eps=cfg.rbf_eps, device=device
         )
 
-        print("Superres mode")
+        # HACK: we need to double the padding attribute
+        # in model
+        fno.padding *= 2 # e.g. from 4px for 60px -> 8px for 120px
+        with ema_helper:
+            u, fn_outs = sample(
+                fno,
+                noise_sampler_2x,
+                sigma,
+                bs=args.val_batch_size,
+                n_examples=args.Ntest,
+                T=cfg.T,
+                epsilon=cfg.epsilon,
+                fns={"skew": circular_skew, "var": circular_var},
+            )
+            skew_generated = fn_outs["skew"]
+            var_generated = fn_outs["var"]
 
-        pass
+        # samples.pkl contains everything
+        torch.save(
+            (u.cpu(), skew_generated, var_generated),
+            os.path.join(args.savedir, "samples_2x.{}.pkl".format(args.checkpoint)),
+        )
+        # stats.pkl just contains skew and variance
+        with open(
+            os.path.join(args.savedir, "stats_2x.{}.pkl".format(args.checkpoint)), "wb"
+        ) as f:
+            pickle.dump(dict(var=var_generated, skew=skew_generated), f)
 
     elif args.mode == "plot":
 
-        samples, skew_generated, var_generated = torch.load(
-            os.path.join(args.savedir, "samples.{}.pkl".format(args.checkpoint))
-        )
+        for postfix in ["", "_2x"]:
 
-        logger.info("samples min-max: {}, {}".format(samples.min(), samples.max()))
-        # print("skew min-max: {}, {}".format(skew.min(), skew.max()))
-        # print("var min-max: {}, {}".format(skew.min(), skew.max()))
-
-        plot_samples_grid(
-            # TODO
-            torch.clamp(samples[0:16], -1, 1),
-            outfile=os.path.join(
-                args.savedir, "samples.{}.png".format(args.checkpoint)
-            ),
-            figsize=(8, 8)
-            # title=str(dict(epoch=ep+1, var=best_var))
-        )
-
-        x_train = train_dataset.dataset.x_train
-        mean_train_set = x_train.mean(dim=0, keepdim=True)
-
-        mean_sample_set = (
-            torch.clamp(samples, -1, 1).mean(dim=0, keepdim=True).detach().cpu()
-        )
-        print(
-            "min max of mean train set: {:.3f}, {:.3f}".format(
-                mean_train_set.min(), mean_train_set.max()
+            pkl_filename = os.path.join(
+                args.savedir, 
+                "samples{}.{}.pkl".format(postfix, args.checkpoint)
             )
-        )
-        print(
-            "min max of mean sample set: {:.3f}, {:.3f}".format(
-                mean_sample_set.min(), mean_sample_set.max()
-            )
-        )
+            logger.info(pkl_filename)
+            if not os.path.exists(pkl_filename):
+                logger.debug("Cannot find {}, skipping...".format(pkl_filename))
+                continue
 
-        mean_samples = torch.cat(
-            (
-                mean_train_set,
-                mean_sample_set,
-            ),
-            dim=0,
-        )
-        plot_samples(
-            mean_samples,  # of shape (2, res, res, 2)
-            subtitles=[
-                format_tuple(mean_train_set.min().item(), mean_train_set.max().item()),
-                format_tuple(
-                    mean_sample_set.min().item(), mean_sample_set.max().item()
+            samples, skew_generated, var_generated = torch.load(pkl_filename)
+            logger.debug("samples shape: {}".format(samples.shape))
+
+            logger.info("samples min-max: {}, {}".format(samples.min(), samples.max()))
+            # print("skew min-max: {}, {}".format(skew.min(), skew.max()))
+            # print("var min-max: {}, {}".format(skew.min(), skew.max()))
+
+            plot_samples_grid(
+                # TODO
+                torch.clamp(samples[0:16], -1, 1),
+                outfile=os.path.join(
+                    args.savedir, "samples{}.{}.png".format(postfix, args.checkpoint)
                 ),
-            ],
-            outfile=os.path.join(
-                args.savedir, "mean_sample.{}.png".format(args.checkpoint)
-            ),
-            figsize=(8, 4),
-        )
+                figsize=(8, 8)
+                # title=str(dict(epoch=ep+1, var=best_var))
+            )
 
-        # import pdb; pdb.set_trace()
+            x_train = train_dataset.dataset.x_train
+            mean_train_set = x_train.mean(dim=0, keepdim=True)
+
+            mean_sample_set = (
+                torch.clamp(samples, -1, 1).mean(dim=0, keepdim=True).detach().cpu()
+            )
+            print(
+                "min max of mean train set: {:.3f}, {:.3f}".format(
+                    mean_train_set.min(), mean_train_set.max()
+                )
+            )
+            print(
+                "min max of mean sample set: {:.3f}, {:.3f}".format(
+                    mean_sample_set.min(), mean_sample_set.max()
+                )
+            )
+
+            mean_samples = torch.cat(
+                (
+                    mean_train_set,
+                    mean_sample_set,
+                ),
+                dim=0,
+            )
+            plot_samples(
+                mean_samples,  # of shape (2, res, res, 2)
+                subtitles=[
+                    format_tuple(mean_train_set.min().item(), mean_train_set.max().item()),
+                    format_tuple(
+                        mean_sample_set.min().item(), mean_sample_set.max().item()
+                    ),
+                ],
+                outfile=os.path.join(
+                    args.savedir, "mean_sample{}.{}.png".format(postfix, args.checkpoint)
+                ),
+                figsize=(8, 4),
+            )
+
+            # import pdb; pdb.set_trace()
 
     else:
 

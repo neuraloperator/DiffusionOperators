@@ -18,6 +18,8 @@ This codebase was written assuming a Slurm controller for running experiments.
 
 Requirements are:
 - PyTorch
+- OmegaConf
+- NeuralOperators
 
 Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. This file will need to be modified to reflect the desired environment that you need to run the code. In my case, I have loaded modules specific to my environment at Mila as well as activate a miniconda environment which has PyTorch and other dependencies set up.
 
@@ -32,6 +34,18 @@ export SAVEDIR="/home/mila/b/beckhamc/scratch/results/no_diffusion"
 export DATA_DIR="/home/mila/b/beckhamc/scratch/datasets/volcano
 
 #+end_src
+
+*** Dataset
+
+The dataset used is Volcano and can be downloaded [[https://drive.google.com/file/d/1WgEOpawpyV_1lf80zpkz47VNtVqHR3ZK/view][here]]. Download it to your desired dataset directory and run:
+
+#+begin_src bash
+tar -xvf InSAR_Volcano.tar
+#+end_src
+
+After this, your =$DATA_DIR= should contain a folder called =subset_128= such that this following directory =$DATA_DIR/subset_128/= exists and has all the necessary files inside it.
+
+For more details on the Volcano dataset, please consult the GANO paper.
 
 ** Running experiments
 
@@ -108,7 +122,12 @@ Some things to note:
 
 *** Baseline experiment
 
-Download the pre-trained checkpoint here.
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Download it to your predefined =$SAVEDIR= and run:
+
+#+begin_src bash
+tar -xvzf rbf-checkpoint.tar.gz
+#+end_src
+
 
 #+begin_src bash
 bash launch_eval.py ...
@@ -123,6 +142,14 @@ bash launch_eval.py ...
 #+end_src
 
 Here are some examples: ...
+
+#+begin_export html
+<img src="/assets/final_stats.png" />
+<br />
+<img src="/assets/rbf_samples_wtotal.png" />
+#+end_export
+
+
 
 ** Future work
 

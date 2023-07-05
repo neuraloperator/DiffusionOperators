@@ -5,7 +5,7 @@ import os
 import pickle
 from timeit import default_timer
 from dataclasses import asdict, dataclass, field
-from typing import List, Union
+from typing import List, Union, Tuple, Dict
 from omegaconf import OmegaConf as OC
 
 import torch
@@ -94,6 +94,47 @@ class Arguments:
     Ntest: int = 1024               # number of samples to compute for validation metrics
     num_workers: int = 2            # number of cpu workers
     ema_rate: Union[float, None] = None # moving average coefficient for EMA
+
+def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
+    """Return training and validation split of dataset
+
+    While it is messy, we use just a monolithic args
+      object here so that it is easy to initialise
+      the train/val dataset from other files when
+      we load the experiment cfg file in.
+
+    """
+    # Dataset generation.
+    datadir = os.environ.get("DATA_DIR", None)
+    if datadir is None:
+        raise ValueError("Environment variable DATA_DIR must be set")
+    transform = None
+    if args.augment:
+        transform = transforms.Compose(
+            [
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomVerticalFlip(p=0.5),
+            ]
+        )
+    dataset = VolcanoDataset(
+        root=datadir,
+        resolution=args.resolution,
+        crop=args.npad,
+        transform=transform
+    )
+    rnd_state = np.random.RandomState(seed=0)
+    dataset_idcs = np.arange(0, len(dataset))
+    rnd_state.shuffle(dataset_idcs)
+    train_dataset = Subset(
+        dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
+    )
+    valid_dataset = Subset(
+        dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
+    )
+    logger.info(
+        "Len of train / valid: {} / {}".format(len(train_dataset), len(valid_dataset))
+    )
+    return train_dataset, valid_dataset
 
 
 @torch.no_grad()
@@ -191,7 +232,6 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
 
     return loss
 
-
 def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
 
@@ -200,48 +240,16 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if not os.path.exists(savedir):
         os.makedirs(savedir)
 
-    # Dataset generation.
-    datadir = os.environ.get("DATA_DIR", None)
-    if datadir is None:
-        raise ValueError("Environment variable DATA_DIR must be set")
-    
-    if args.augment:
-        transform = transforms.Compose(
-            [
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.5),
-            ]
-        )
-    else:
-        transform = None
-    logger.debug("transform: {}".format(transform))
-    dataset = VolcanoDataset(
-        root=datadir, 
-        resolution=args.resolution,
-        crop=args.npad,
-        transform=transform
-    )
-    rnd_state = np.random.RandomState(seed=0)
-    dataset_idcs = np.arange(0, len(dataset))
-    rnd_state.shuffle(dataset_idcs)
-    train_dataset = Subset(
-        dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
-    )
-    valid_dataset = Subset(
-        dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
-    )
-    logger.info(
-        "Len of train / valid: {} / {}".format(len(train_dataset), len(valid_dataset))
-    )
+    train_dataset, valid_dataset = get_dataset(args)
 
     # Initialise the model
     logger.debug("res: {}, crop = {}, dataset.x_train = {}".format(
-        args.resolution, args.npad, dataset.x_train.shape
+        args.resolution, args.npad, train_dataset.dataset.x_train.shape
     ))
     fno = UNO(
         2,
         args.d_co_domain,
-        s=dataset.res,
+        s=train_dataset.dataset.res,
         pad=args.npad,
         fmult=args.fmult,
         groups=args.groups,
@@ -287,14 +295,22 @@ def init_model(args, savedir, checkpoint="model.pt"):
     # Initialise samplers.
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
-        logger.warning("Using independent Gaussian noise, NOT grf noise...")
-        noise_sampler = IndependentGaussian(dataset.res, dataset.res, sigma=1.0, device=device)
-    else:
-        logger.debug("Initialising noise and init sampler...")
-        noise_sampler = GaussianRF_RBF(
-            dataset.res, dataset.res, scale=args.rbf_scale, eps=args.rbf_eps, device=device
+        logger.warning("Noise distribution: independent Gaussian noise")
+        noise_sampler = IndependentGaussian(
+            train_dataset.dataset.res, 
+            train_dataset.dataset.res, 
+            sigma=1.0, 
+            device=device
         )
-        logger.debug("... done noise and init samplers")
+    else:
+        logger.debug("Noise distribution: RBF noise")
+        noise_sampler = GaussianRF_RBF(
+            train_dataset.dataset.res, 
+            train_dataset.dataset.res, 
+            scale=args.rbf_scale, 
+            eps=args.rbf_eps, 
+            device=device
+        )
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError(
