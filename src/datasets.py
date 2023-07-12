@@ -1,6 +1,7 @@
 import torch
 from torch.nn import functional as F
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
+from typing import Tuple
 import glob
 import numpy as np
 
@@ -9,6 +10,19 @@ logger = get_logger(__name__)
 
 # TODO
 # dataset should have .X method, .resolution
+
+"""
+class DelegableSubset(Subset):
+    def __getattr__(self, name):
+        if hasattr(self, name):
+            # If Subset has this method already, return it
+            return self.__dict__[name]
+        elif hasattr(self.dataset, name):
+            # If self.dataset has this method, return it
+            return getattr(self.dataset, name)
+        else:
+            raise AttributeError(f"object has no attribute '{name}'")
+"""
 
 class FunctionDataset(Dataset):
     """
@@ -24,7 +38,7 @@ class FunctionDataset(Dataset):
         raise NotImplementedError("This method should return X, a torch tensor for the dataset")
     
     @property
-    def resolution(self) -> int:
+    def res(self) -> int:
         raise NotImplementedError("This method should return the spatial dimension of the dataset")
 
 class VolcanoDataset(FunctionDataset):

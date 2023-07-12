@@ -164,7 +164,6 @@ class UNO(nn.Module):
 
         time_dim = d_co_domain * 4
 
-        dim_grid = 0
         self.init_conv = nn.Conv2d(in_d_co_domain + 2, d_co_domain, 1, padding=0)
 
         A = mult_dims
@@ -182,7 +181,7 @@ class UNO(nn.Module):
         )
 
         self.block1 = block_class(
-            self.d_co_domain + dim_grid,
+            self.d_co_domain,
             A[0] * self.d_co_domain,
             # 128, 128
             sdim,
@@ -192,7 +191,7 @@ class UNO(nn.Module):
             groups=groups
         )
         self.block2 = block_class(
-            A[0] * self.d_co_domain + dim_grid,
+            A[0] * self.d_co_domain,
             A[1] * self.d_co_domain,
             # 128, 96
             sdim,
@@ -203,7 +202,7 @@ class UNO(nn.Module):
         )
 
         self.block3 = block_class(
-            A[1] * self.d_co_domain + dim_grid,
+            A[1] * self.d_co_domain,
             A[2] * self.d_co_domain,
             # 96, 64
             int(sdim * 0.75),
@@ -214,7 +213,7 @@ class UNO(nn.Module):
         )
 
         self.block4 = block_class(
-            A[2] * self.d_co_domain + dim_grid,
+            A[2] * self.d_co_domain,
             A[3] * self.d_co_domain,
             # 64, 32
             sdim // 2,
@@ -225,7 +224,7 @@ class UNO(nn.Module):
         )
 
         self.inv2_9 = block_class(
-            A[3] * self.d_co_domain + dim_grid,
+            A[3] * self.d_co_domain,
             A[2] * self.d_co_domain,
             # 32, 64
             sdim // 4,
@@ -236,7 +235,7 @@ class UNO(nn.Module):
         )
         # combine out channels of inv2_9 and block3
         self.inv3 = block_class(
-            (A[2] * 2) * self.d_co_domain + dim_grid,
+            (A[2] * 2) * self.d_co_domain,
             A[1] * self.d_co_domain,
             # 64, 96
             sdim // 2,
@@ -247,7 +246,7 @@ class UNO(nn.Module):
         )
         # combine out channels of inv3 and block2
         self.inv4 = block_class(
-            (A[1] * 2) * self.d_co_domain + dim_grid,
+            (A[1] * 2) * self.d_co_domain,
             A[0] * self.d_co_domain,
             # 96, 128
             int(sdim * 0.75),
@@ -260,7 +259,7 @@ class UNO(nn.Module):
 
         # combine out channels of inv4 and block1
         self.inv5 = block_class(
-            (A[0] * 2) * self.d_co_domain + dim_grid,
+            (A[0] * 2) * self.d_co_domain,
             self.d_co_domain,
             sdim,
             sdim,
@@ -313,6 +312,7 @@ class UNO(nn.Module):
         t_emb = self.time_mlp(t)
 
         x = torch.cat((x, grid), dim=-1)
+
 
         x_fc0 = x.permute(0, 3, 1, 2)
         x_fc0 = self.init_conv(x_fc0)

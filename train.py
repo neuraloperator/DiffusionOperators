@@ -116,6 +116,7 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
                 transforms.RandomVerticalFlip(p=0.5),
             ]
         )
+    logger.debug("resolution: {}".format(args.resolution))
     dataset = VolcanoDataset(
         root=datadir,
         resolution=args.resolution,
@@ -647,19 +648,13 @@ def run(args: Arguments, savedir: str):
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.override_cfg:
-        # If this is set, see if there already exists a cfg file in
-        # the specified savedir and load that instead. This flag
-        # should be set with SLURM jobs so that the resume properly.
-        logger.debug("override.cfg is set, scanning for pre-existing config...")
-        saved_cfg_file = os.path.join(args.savedir, "config.json")
-        if os.path.exists(saved_cfg_file):
-            cfg_file = json.loads(open(saved_cfg_file, "r").read())
-            logger.debug("Found {}, loading instead...".format(saved_cfg_file))
-        else:
-            cfg_file = json.loads(open(args.cfg, "r").read())
+    saved_cfg_file = os.path.join(args.savedir, "config.json")
+    if os.path.exists(saved_cfg_file):
+        cfg_file = json.loads(open(saved_cfg_file, "r").read())
+        logger.debug("Found config in exp dir, loading instead...")
     else:
         cfg_file = json.loads(open(args.cfg, "r").read())
+
     # structured() allows type checking
     conf = OC.structured(Arguments(**cfg_file))
 

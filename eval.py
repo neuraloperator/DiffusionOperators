@@ -185,15 +185,18 @@ if __name__ == "__main__":
             # print("skew min-max: {}, {}".format(skew.min(), skew.max()))
             # print("var min-max: {}, {}".format(skew.min(), skew.max()))
 
-            plot_samples_grid(
-                # TODO
-                torch.clamp(samples[0:16], -1, 1),
-                outfile=os.path.join(
-                    args.savedir, "samples{}.{}.png".format(postfix, args.checkpoint)
-                ),
-                figsize=(8, 8)
-                # title=str(dict(epoch=ep+1, var=best_var))
-            )
+            for c in range(4):
+                this_outfile = "samples{}.{}.{}.png".format(postfix, args.checkpoint, c)
+                logger.info("Saving: {} ...".format(this_outfile))
+                plot_samples_grid(
+                    # TODO
+                    torch.clamp(samples[(c*16):(c+1)*16], -1, 1),
+                    outfile=os.path.join(
+                        args.savedir, this_outfile
+                    ),
+                    figsize=(8, 8)
+                    # title=str(dict(epoch=ep+1, var=best_var))
+                )
 
             x_train = train_dataset.dataset.x_train
             mean_train_set = x_train.mean(dim=0, keepdim=True)
