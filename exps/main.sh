@@ -1,7 +1,18 @@
 #!/bin/bash
 
-EXP_GROUP=$1
-CFG_FILE=$2
+METHOD=$1
+EXP_GROUP=$2
+CFG_FILE=$3
+
+if [ $METHOD == "gan" ]; then
+  train_file="train_gano.py"
+elif [ $METHOD == "sbgm" ]; then
+  train_file="train.py"
+else
+  echo "Unknown method: choose either 'sbgm' or 'gan'"
+  exit 1
+fi
+echo "train file: " ${train_file}
 
 if [ -z $EXP_GROUP ]; then
   echo "Must specify an experiment group name!"
@@ -43,13 +54,12 @@ fi
 
 CFG_ABS_PATH=`pwd`/exps/${CFG_FILE}
 echo "Absolute path of cfg: " $CFG_ABS_PATH
-
 if [ -z $RUN_LOCAL ]; then
   cd ${SAVEDIR}/${EXP_NAME}/code
-  python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME} --override_cfg
+  python ${train_file} --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
 else
   echo "RUN_LOCAL mode set, run code from this directory..."
-  python train.py --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
+  python ${train_file} --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
 fi
 echo "Current working directory: " `pwd`
 

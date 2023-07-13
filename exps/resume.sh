@@ -6,8 +6,19 @@
 # e.g.
 # sbatch resume.sh "resume_exp_9999" "my_existing_experiment/123456"
 
-EXP_GROUP=$1
-TARGET_EXP=$2
+METHOD=$1
+EXP_GROUP=$2
+TARGET_EXP=$3
+
+if [ $METHOD == "gan" ]; then
+  resume_file="resume_gano.py"
+elif [ $METHOD == "sbgm" ]; then
+  resume_file="resume.py"
+else
+  echo "Unknown method: choose either 'sbgm' or 'gan'"
+  exit 1
+fi
+echo "resume file: " ${resume_file}
 
 if [ -z $EXP_GROUP ]; then
   echo "Must specify an experiment group name!"
@@ -51,6 +62,7 @@ fi
 echo "Current working directory: " `pwd`
 
 echo "Executing: python resume.py ${SAVEDIR}/${TARGET_EXP}"
-python resume.py $SAVEDIR/$TARGET_EXP
+
+python ${resume_file} $SAVEDIR/$TARGET_EXP
 
 #bash launch.sh $EXP_NAME

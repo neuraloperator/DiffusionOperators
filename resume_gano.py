@@ -1,7 +1,7 @@
 import json
 import sys
 import os
-from train import run, Arguments
+from train_gano import run, Arguments
 from src.util.utils import DotDict
 
 from omegaconf import OmegaConf as OC
