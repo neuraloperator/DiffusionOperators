@@ -137,16 +137,13 @@ if __name__ == "__main__":
 
         # HACK: we need to double the padding attribute
         # in model
-        fno.padding *= 2 # e.g. from 4px for 60px -> 8px for 120px
+        G.padding *= 2 # e.g. from 4px for 60px -> 8px for 120px
         with ema_helper:
             u, fn_outs = sample(
-                fno,
+                G,
                 noise_sampler_2x,
-                sigma,
                 bs=args.val_batch_size,
                 n_examples=args.Ntest,
-                T=cfg.T,
-                epsilon=cfg.epsilon,
                 fns={"skew": circular_skew, "var": circular_var},
             )
             skew_generated = fn_outs["skew"]
