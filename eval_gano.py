@@ -16,7 +16,7 @@ from src.util.utils import (
     rescale,
 )
 
-from train import init_model, sample, get_dataset
+from train_gano import init_model, sample, get_dataset
 
 from src.util.setup_logger import get_logger
 logger = get_logger(__name__)
@@ -75,12 +75,12 @@ if __name__ == "__main__":
     print(json.dumps(cfg, indent=4))
 
     (
-        fno,
+        G, D,
         ema_helper,
         start_epoch,
         val_metrics,
         (train_dataset, valid_dataset),
-        (noise_sampler, sigma),
+        noise_sampler,
     ) = init_model(cfg, expdir, args.checkpoint)
 
     if args.mode == "generate":
@@ -89,13 +89,10 @@ if __name__ == "__main__":
 
         with ema_helper:
             u, fn_outs = sample(
-                fno,
+                G,
                 noise_sampler,
-                sigma,
                 bs=args.val_batch_size,
                 n_examples=args.Ntest,
-                T=cfg.T,
-                epsilon=cfg.epsilon,
                 fns={"skew": circular_skew, "var": circular_var},
             )
             skew_generated = fn_outs["skew"]
@@ -168,6 +165,7 @@ if __name__ == "__main__":
 
     elif args.mode == "plot":
 
+        # TODO: unify with eval.py code, since this is duplicated
         for postfix in ["", "_2x"]:
 
             pkl_filename = os.path.join(
@@ -186,16 +184,12 @@ if __name__ == "__main__":
             # print("skew min-max: {}, {}".format(skew.min(), skew.max()))
             # print("var min-max: {}, {}".format(skew.min(), skew.max()))
 
-            # permute the ordering of samples
-            idcs = torch.randperm(samples.size(0))
-            samples = samples[idcs]
-
             for c in range(4):
                 this_outfile = "samples{}.{}.{}.png".format(postfix, args.checkpoint, c)
                 logger.info("Saving: {} ...".format(this_outfile))
                 plot_samples_grid(
                     # TODO
-                    samples[(c*16):(c+1)*16],
+                    torch.clamp(samples[(c*16):(c+1)*16], -1, 1),
                     outfile=os.path.join(
                         args.savedir, this_outfile
                     ),
@@ -207,7 +201,7 @@ if __name__ == "__main__":
             mean_train_set = x_train.mean(dim=0, keepdim=True)
 
             mean_sample_set = (
-                samples.mean(dim=0, keepdim=True).detach().cpu()
+                torch.clamp(samples, -1, 1).mean(dim=0, keepdim=True).detach().cpu()
             )
             print(
                 "min max of mean train set: {:.3f}, {:.3f}".format(

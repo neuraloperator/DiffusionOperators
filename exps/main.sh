@@ -4,9 +4,9 @@ METHOD=$1
 EXP_GROUP=$2
 CFG_FILE=$3
 
-if [ $METHOD == "gan" ]; then
+if [[ $METHOD == "gan" ]]; then
   train_file="train_gano.py"
-elif [ $METHOD == "sbgm" ]; then
+elif [[ $METHOD == "sbgm" ]]; then
   train_file="train.py"
 else
   echo "Unknown method: choose either 'sbgm' or 'gan'"
