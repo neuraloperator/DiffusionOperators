@@ -26,5 +26,4 @@ python ${eval_file} \
 --Ntest=1024 \
 --val_batch_size=128 \
 --savedir="${SAVEDIR}/${EXP_NAME}/eval" \
---checkpoint="model.w_total.pt" \
 "${@:3}"

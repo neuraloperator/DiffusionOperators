@@ -35,7 +35,7 @@ def parse_args():
         help="Full path of the experiment: <savedir>/<group>/<id>",
     )
     parser.add_argument("--savedir", type=str, required=True, help="dump stats here")
-    parser.add_argument("--checkpoint", type=str, default="model.pt")
+    parser.add_argument("--checkpoint", type=str, default="model.w_total.pt")
     parser.add_argument(
         "--mode",
         type=str,
