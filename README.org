@@ -138,7 +138,7 @@ The main flags to be aware of here are:
 We have a separate evaluation script which can be used to dump samples to disk, as well as evaluating the validation metrics used but on a larger set of samples. To generate samples, we run:
 
 #+begin_src bash
-bash launch_eval.py sbgm <experiment name> --mode=generate
+bash launch_eval.py sbgm <experiment name>/<id> --mode=generate
 #+end_src
 
 This script will dump various pkl files out to =<experiment name>/eval=. 
@@ -146,7 +146,7 @@ This script will dump various pkl files out to =<experiment name>/eval=.
 If we want actual png/pdf files of those samples to be created in that directory, simply run:
 
 #+begin_src bash
-bash launch_eval.py sbgm <experiment name> --mode=plot
+bash launch_eval.py sbgm <experiment name>/<id> --mode=plot
 #+end_src
 
 To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt=, which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
@@ -162,19 +162,23 @@ tar -xvzf rbf-checkpoint.tar.gz
 Then cd back into this repo into =exps= and run:
 
 #+begin_src bash
-bash launch_eval.py ...
+bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" \ --checkpoint=model.w_total.pt --mode=generate
+
+bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" \ --checkpoint=model.w_total.pt --mode=plot
 #+end_src
 
-*** RBF experiment
+(The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly.)
 
-Download the pretrained checkpoint here.
-
-#+begin_src bash
-bash launch_eval.py ...
-#+end_src
-
-Here are some examples: ...
+Here are some examples outputs:
 
 [[./assets/final_stats.png]]
 
 [[./assets/rbf_samples_wtotal.png]]
+
+*** RBF experiment
+
+Download the pretrained checkpoint here. TODO.
+
+#+begin_src bash
+bash launch_eval.py ...
+#+end_src
