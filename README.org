@@ -164,8 +164,10 @@ bash launch_eval.py ...
 
 Here are some examples: ...
 
+#+attr_html :width 250
 [[./assets/final_stats.png]]
 
+#+attr_html :width 250
 [[./assets/rbf_samples_wtotal.png]]
 
 ** Future work
