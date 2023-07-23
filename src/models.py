@@ -5,8 +5,6 @@ import numpy as np
 
 from .util.run_nerf_helpers import get_embedder
 
-#from einops import rearrange, reduce
-
 import math
 
 from functools import partial

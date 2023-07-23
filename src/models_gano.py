@@ -5,8 +5,6 @@ import numpy as np
 
 from .util.run_nerf_helpers import get_embedder
 
-from einops import rearrange, reduce
-
 import copy
 import math
 
@@ -99,7 +97,7 @@ def kernel(in_chan=2, up_dim=32):
 
 class Generator(nn.Module):
     def __init__(self, in_d_co_domain, d_co_domain, pad = 0, factor = 3/4):
-        super(Generator, self).__init__()
+        super(Generator, self).__init__() 
 
         """
         The overall network. It contains 4 layers of the Fourier layer.
