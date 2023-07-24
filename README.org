@@ -1,6 +1,6 @@
-* NO_Diffusion
+* Diffusion Operators
 
-This is Chris Beckham's code to run diffusion operators on the Volcano dataset, to accompany the following paper:
+This is Chris Beckham's code to run diffusion operators (score matching with neural operators), to accompany the following paper:
 
 #+begin_src
 @article{lim2023score,
@@ -11,18 +11,39 @@ This is Chris Beckham's code to run diffusion operators on the Volcano dataset, 
 }
 #+end_src
 
+This repository was developed on a cluster that implements Slurm for scheduling and running experiments, and therefore it is built accommodating its various intricacies. However running jobs without it is also supported here.
+
 ** Installation
 
-Requirements are:
+Python >= 3.7 is required. The following dependencies are required:
 
 - =torch= (>=1.12 should work)
 - =torchvision= (>=0.13.1 should work)
+- =scipy=
 - =omegaconf=
-- =neuraloperator= [[https://github.com/neuraloperator/neuraloperator][[github]​]]
-  - To be on the safe side, clone this repo, run =git checkout 8a0f526=, and install locally with =pip install -e .=
+- =neuraloperator= ([[https://github.com/neuraloperator/neuraloperator][github]])
+  - specifically commit =8a0f526=, I haven't tested with newer versions yet so I don't know if they break the pretrained checkpoints
 - =tqdm=
 
-This repository was developed on a cluster that implements Slurm for scheduling and running experiments, and therefore it is built accommodating its various intricacies. However running jobs without it is also supported here.
+To create a Conda environment with the aforementioned dependencies, you can more or less run the following:
+
+#+begin_src bash
+
+conda create --prefix <env dir>/<my env name> python=3.9
+conda activate <env dir>/<my env name>
+
+# Install pytorch
+pip install torch==1.12.1+cu116 torchvision==0.13.1+cu116 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu116
+pip install omegaconf tqdm scipy  opencv-python matplotlib
+
+# Install neuraloperator
+git clone https://github.com/neuraloperator/neuraloperator
+cd neuraloperator
+pip install -r requirements.txt
+# This repo was developed under the following commit hash, though newer versions may work (yet to be tested).
+git checkout 8a0f526
+pip install -e .
+#+end_src
 
 Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. Currently this file represents my own personal development environment, therefore it will /need to be modified/ to reflect /your/ desired environment, specifically one that has the aforementioned requirements installed (e.g. PyTorch, neural operators, etc.):
 
@@ -45,7 +66,7 @@ When this is done, run =source env.sh=.
 
 *** Dataset
 
-The dataset used is Volcano and can be downloaded [[https://drive.google.com/file/d/1WgEOpawpyV_1lf80zpkz47VNtVqHR3ZK/view][here]]. Download it to your dataset directory specified by =DATA_DIR= (in =env.sh)= and extract it by running:
+The dataset used is Volcano and can be downloaded [[https://drive.google.com/file/d/1WgEOpawpyV_1lf80zpkz47VNtVqHR3ZK/view][here]]. Download it to your dataset directory specified by =$DATA_DIR= (in =env.sh=) and extract it by running:
 
 #+begin_src bash
 cd $DATA_DIR
@@ -54,7 +75,7 @@ tar -xvf InSAR_Volcano.tar
 
 After this, your =$DATA_DIR= should contain a folder called =subset_128= such that this following directory =$DATA_DIR/subset_128/= exists and has all the necessary files inside it.
 
-For more details on the Volcano dataset, please consult the GANO paper:
+For more details on the Volcano dataset, please consult the [[https://arxiv.org/abs/2205.03017][GANO paper]]:
 
 #+begin_src
 @article{rahman2022generative,
@@ -87,13 +108,12 @@ For Slurm-enabled clusters, simply run:
 sbatch launch_exp.sh sbgm <experiment name> <json file>
 #+end_src
 
-Note that the SBATCH flags at the header of =launch_exp.sh= should be modified according to what is appropriate for your cluster environment (e.g. GPU selected, available memory, etc.). Again, those header values are specific to my own development environment.
+Note that the SBATCH flags at the header of =launch_exp.sh= should be modified according to what is appropriate for /your/ cluster environment (e.g. GPU selected, available memory, etc.). Again, the SBATCH flags provided are specific to to my own development environment.
 
 If you are not running this on a Slurm environment, then you should also define =SLURM_JOB_ID= to something that can uniquely identify your experiment. For instance, we can just use the Unix timestamp:
 
 #+begin_src 
-RUN_LOCAL=1 SLURM_JOB_ID=`date +%s` \
-bash main.sh <experiment name> <json file>
+RUN_LOCAL=1 SLURM_JOB_ID=`date +%s` bash main.sh <experiment name> <json file>
 #+end_src
 
 *** Visualisations
@@ -108,7 +128,7 @@ In the results directory =$SAVEDIR/<slurm job id>/<experiment name>=, the follow
 
 ** Reproducing experiments
 
-Experiments are run by running a launch script as well as specifying the path to a json file which details all of the hyperparameters to be used. To see what hyperparameters exist, please consult the `Arguments` dataclass in =train.py=.
+Experiments are run by running a launch script that specifies (1) the type of model being trained (either =sbgm= or =gano=); (2) the name of the experiment (user chosen) and (3) the path to a json file which details all of the hyperparameters to be used. (To see what hyperparameters exist, please consult the =Arguments= dataclass in =train.py=.)
 
 For the following commands, if /you are not using Slurm/, simply set =SLURM_JOB_ID= to your own unique identifier and launch with =bash= instead of =sbatch=.
 
@@ -154,32 +174,37 @@ To see what additional flags are supported, check out the argparse flags in =eva
 
 *** Baseline experiment (independent noise)
 
-Download the pretrained checkpoint here. TODO.
+Download the pretrained checkpoint [[https://drive.google.com/file/d/1LVPE84WtgyZn4rTRWfquuuS42zEzjbt3/view?usp=sharing][here]]. Download it to your =$SAVEDIR= and run:
 
 #+begin_src bash
-bash launch_eval.py ...
+tar -xvzf indep-checkpoint.tar.gz
 #+end_src
 
+The directory =$SAVEDIR/tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
+
+#+begin_src bash
+bash launch_eval.py sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=generate
+
+bash launch_eval.py sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=plot
+#+end_src
 
 *** RBF experiment (structured noise)
 
-Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Download it to your predefined =$SAVEDIR= and run:
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Download it to your =$SAVEDIR= and run:
 
 #+begin_src bash
 tar -xvzf rbf-checkpoint.tar.gz
 #+end_src
 
-Then cd back into this repo into =exps= and run:
+The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
 
 #+begin_src bash
-bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" \ --checkpoint=model.w_total.pt --mode=generate
+bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=generate
 
-bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" \ --checkpoint=model.w_total.pt --mode=plot
+bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=plot
 #+end_src
 
-(The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly.)
-
-Here are some examples outputs:
+Here are some example outputs:
 
 [[./assets/final_stats.png]]
 
