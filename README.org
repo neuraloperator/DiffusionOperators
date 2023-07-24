@@ -18,7 +18,8 @@ Requirements are:
 - =torch= (>=1.12 should work)
 - =torchvision= (>=0.13.1 should work)
 - =omegaconf=
-- =neuraloperator= (commit `8a0f5260983efffbe6e8ec39c2d095dba8cb2505`)
+- =neuraloperator= [[https://github.com/neuraloperator/neuraloperator][[github]​]]
+  - To be on the safe side, clone this repo, run =git checkout 8a0f526=, and install locally with =pip install -e .=
 - =tqdm=
 
 This repository was developed on a cluster that implements Slurm for scheduling and running experiments, and therefore it is built accommodating its various intricacies. However running jobs without it is also supported here.
@@ -151,7 +152,16 @@ bash launch_eval.py sbgm <experiment name>/<id> --mode=plot
 
 To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt=, which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
 
-*** Baseline experiment
+*** Baseline experiment (independent noise)
+
+Download the pretrained checkpoint here. TODO.
+
+#+begin_src bash
+bash launch_eval.py ...
+#+end_src
+
+
+*** RBF experiment (structured noise)
 
 Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Download it to your predefined =$SAVEDIR= and run:
 
@@ -175,10 +185,3 @@ Here are some examples outputs:
 
 [[./assets/rbf_samples_wtotal.png]]
 
-*** RBF experiment
-
-Download the pretrained checkpoint here. TODO.
-
-#+begin_src bash
-bash launch_eval.py ...
-#+end_src
