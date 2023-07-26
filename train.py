@@ -181,54 +181,21 @@ def sample(
 
 def score_matching_loss(fno, u, sigma, noise_sampler):
     """
-
-
-    Notes:
-    ------
-
-    For x ~ p_{\sigma_i}(x|x0), and x0 ~ p_{data}(x):
-
-      loss = || sigma_i*score_fn(x, sigma_i) + (x - x0) / sigma_i ||
-           = || sigma_i*score_fn(x0+noise, sigma_i) + (x0 + noise - x0) / sigma_i||
-           = || sigma_i*score_fn(x0+noise, sigma_i) + (noise) / sigma_i||
-
-    If we use the trick from "Improved techniques for SBGMs" paper then:
-
-      loss = || score_fn(x0+noise, sigma_i) = score_fn(x0+noise) / sigma_i ||
-
-    which we can just implement inside the unet's forward(). This means that
-    the actual loss would be:
-
-      loss = || sigma_i*score_fn(x0+noise)/sigma_i + (noise)/sigma_i||
-
-    The sigmas for the first term cancel out and we finally obtain:
-
-      loss = || score_fn(x0+noise) + noise/sigma_i||
     """
 
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
     idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
     this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
-    # z ~ N(0,\sigma) <=> 0 + \sigma*eps, where eps ~ N(0,1) (noise_sampler).
-    noise = this_sigmas * noise_sampler.sample(bsize)
-    # term1 = score_fn(x0+noise)
-    u_noised = u + noise
+    # noise = sqrt(sigma_i) * (L * epsilon)
+    # loss = || noise + sigma_i * F(u+noise) ||^2
+    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
+    term1 = this_sigmas * fno(u+noise, idcs, this_sigmas)
+    term2 = noise
 
-    term1 = this_sigmas * fno(u_noised, idcs, this_sigmas)
-    term2 = noise / this_sigmas
-
-    # (1, s^2, s^2) -> (bs, s^2, s^2)
-    # C_half_inv = noise_sampler.C_half_inv.unsqueeze(0).expand(bsize, -1, -1)
     res_sq = u.size(1) * u.size(2)
-    # (bs, s^2, 2)
     terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
 
-    # inv(C)*terms_flattened =
-    # (bs, s^2, s^2) x (bs, s^2, 2) -> (bs, s^2, 2)
-    # scaled_loss = torch.bmm(C_half_inv, terms_flattened)
-
-    # loss = C_inv * (sigma*score_net + noise)
     loss = (terms_flattened**2).mean()
 
     return loss
