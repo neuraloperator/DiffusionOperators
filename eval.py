@@ -195,11 +195,12 @@ if __name__ == "__main__":
                 logger.info("Saving: {} ...".format(this_outfile))
                 plot_samples_grid(
                     # TODO
-                    samples[(c*16):(c+1)*16],
+                    samples[(c*20):(c+1)*20],
+                    nrow_ncol=(4,5),
                     outfile=os.path.join(
                         args.savedir, this_outfile
                     ),
-                    figsize=(8, 8)
+                    figsize=(12, 8)
                     # title=str(dict(epoch=ep+1, var=best_var))
                 )
 

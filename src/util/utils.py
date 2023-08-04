@@ -1,7 +1,9 @@
 import torch
 import torch.fft as fft
 from tqdm import tqdm
-import numpy as np
+import numpy as np 
+
+from typing import Tuple, List
 
 import os
 import matplotlib.pyplot as plt
@@ -206,23 +208,30 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None,
 
 def plot_samples_grid(samples: torch.Tensor, 
                       outfile: str, 
+                      nrow_ncol: Tuple[int] = None,
                       title: str = None,
-                      subtitles=None,
-                      figsize=(16,4)):
+                      subtitles: List[str] = None,
+                      figsize: Tuple[float] = (16,4)):
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
         os.makedirs(basedir)
-    nrow = ncol = int(np.sqrt(samples.size(0)))
+    if nrow_ncol is None:
+        nrow = ncol = int(np.sqrt(samples.size(0)))
+    else:
+        nrow = nrow_ncol[0]
+        ncol = nrow_ncol[1]
     if subtitles is not None:
         assert len(subtitles) == ncol*nrow
     fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
     for i in range(nrow):
         for j in range(ncol):
             phase = to_phase(samples[i*nrow +j]).cpu().detach().numpy()
-            bar = ax[i][j].imshow(phase,  
-                            cmap='RdYlBu', 
-                            vmin = -np.pi, 
-                            vmax=np.pi,extent=[0,1,0,1])
+            ax[i][j].imshow(
+                phase,  
+                cmap='RdYlBu', 
+                vmin = -np.pi, 
+                vmax=np.pi,extent=[0,1,0,1]
+            )
             if subtitles is not None:
                 ax[i][j].set_title(subtitles[i*nrow + j])
     if title is not None:
