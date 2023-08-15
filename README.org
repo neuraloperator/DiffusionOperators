@@ -140,6 +140,8 @@ cd into =exps= and run:
 sbatch launch_exp.sh sbgm indep_experiment json/indep-copied.json
 #+end_src
 
+The main flag to be aware of here is =white_noise= and should be set to =true=. When this is true, the =rbf*= flags are ignored.
+
 *** RBF experiment (structured noise)
 
 cd into =exps= and run:
@@ -170,11 +172,11 @@ If we want actual png/pdf files of those samples to be created in that directory
 bash launch_eval.py sbgm <experiment name>/<id> --mode=plot
 #+end_src
 
-To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt=, which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
+To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt= (i.e. =--checkpoint=model.w_total.pt=) which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
 
 *** Baseline experiment (independent noise)
 
-Download the pretrained checkpoint [[https://drive.google.com/file/d/1LVPE84WtgyZn4rTRWfquuuS42zEzjbt3/view?usp=sharing][here]]. Download it to your =$SAVEDIR= and run:
+Download the pretrained checkpoint [[https://drive.google.com/file/d/1LVPE84WtgyZn4rTRWfquuuS42zEzjbt3/view?usp=sharing][here]]. Extract it to your =$SAVEDIR= and run:
 
 #+begin_src bash
 tar -xvzf indep-checkpoint.tar.gz
@@ -190,7 +192,7 @@ bash launch_eval.py sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker
 
 *** RBF experiment (structured noise)
 
-Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Download it to your =$SAVEDIR= and run:
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Extract it to your =$SAVEDIR= and run:
 
 #+begin_src bash
 tar -xvzf rbf-checkpoint.tar.gz
@@ -209,4 +211,24 @@ Here are some example outputs:
 [[./assets/final_stats.png]]
 
 [[./assets/rbf_samples_wtotal.png]]
+
+*** Super-resolution
+
+Here we train diffusion operators on the original images downsampled to 60px. At generation time, we sample noise that is twice that resolution, effectively performing super-resolution from 60px to 120px.
+
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1Z9VPip67MpBk68ZGGKZZBJYspYORgZ9b/view?usp=sharing][here]] and extract it to your =$SAVEDIR=. This tarfile contains the following experiments, each varies by the amount of RBF kernel smoothness used:
+
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431833 -> rbf_scale = 0.05=
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431835 -> rbf_scale = 0.1=
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431834 -> rbf_scale = 0.2=
+
+To perform super-res generation for any of them, run:
+
+#+begin_src bash
+
+# e.g. <name> = tmp2000_rbf_pred-noise_eqn1c_64px/3431835
+bash launch_eval.py sbgm <experiment name> --checkpoint=model.w_total.pt --mode=superres
+
+bash launch_eval.py sbgm <experiment name> --checkpoint=model.w_total.pt --mode=plot
+#+end_src
 
