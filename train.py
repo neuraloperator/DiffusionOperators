@@ -616,7 +616,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     saved_cfg_file = os.path.join(args.savedir, "config.json")
-    if os.path.exists(saved_cfg_file):
+    if os.path.exists(saved_cfg_file) and not args.override_cfg:
         cfg_file = json.loads(open(saved_cfg_file, "r").read())
         logger.debug("Found config in exp dir, loading instead...")
     else:

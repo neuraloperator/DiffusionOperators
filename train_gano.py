@@ -55,6 +55,13 @@ def parse_args():
     # parser.add_argument('--datadir', type=str, default="")
     parser.add_argument("--savedir", type=str, required=True)
     parser.add_argument("--cfg", type=str, required=True)
+    parser.add_argument(
+        "--override_cfg",
+        action="store_true",
+        help="If this is set, then if there already exists a config.json "
+        + "in the directory defined by savedir, load that instead of args.cfg. "
+        + "This should be set so that SLURM does the right thing if the job is restarted.",
+    )
     args = parser.parse_args()
     return args
 
@@ -558,7 +565,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     saved_cfg_file = os.path.join(args.savedir, "config.json")
-    if os.path.exists(saved_cfg_file):
+    if os.path.exists(saved_cfg_file) and not args.override_cfg:
         cfg_file = json.loads(open(saved_cfg_file, "r").read())
         logger.debug("Found config in exp dir, loading instead...")
     else:

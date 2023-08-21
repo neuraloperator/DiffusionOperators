@@ -6,6 +6,11 @@
 #SBATCH --time=0-16:00:00                                # The job will run for 16 hrs
 #SBATCH -o /network/scratch/b/beckhamc/slurm-logs/slurm-cifar10-%j.out  # Write the log on scratch
 
+if [ -z $RUN_LOCAL ]; then
+  echo "Assuming sbatch experiment, automatically sourcing env.sh ..."
+  source env.sh
+fi
+
 cd ..
 
 METHOD=$1

@@ -41,14 +41,17 @@ echo "Experiment name: " $EXP_NAME
 cd ..
 
 # If code does not exist for this experiment, copy
-# it over. Then cd into that directory and run the code
-if [ ! -d ${SAVEDIR}/${EXP_NAME}/code ]; then
-  mkdir -p ${SAVEDIR}/${EXP_NAME}
-  echo "Copying code..."
-  rsync -r -v --exclude='exps' --exclude='.git' --exclude='__pycache__' --exclude '*.pyc' . ${SAVEDIR}/${EXP_NAME}/code
-  if [ ! $? -eq 0 ]; then
-    echo "rsync returned error, terminating..."
-    exit 1
+# it over. Then cd into that directory and run the code.
+# But only if we're not in run_local mode.
+if [ -z $RUN_LOCAL ]; then
+  if [ ! -d ${SAVEDIR}/${EXP_NAME}/code ]; then
+    mkdir -p ${SAVEDIR}/${EXP_NAME}
+    echo "Copying code..."
+    rsync -r -v --exclude='exps' --exclude='.git' --exclude='__pycache__' --exclude '*.pyc' . ${SAVEDIR}/${EXP_NAME}/code
+    if [ ! $? -eq 0 ]; then
+      echo "rsync returned error, terminating..."
+      exit 1
+    fi
   fi
 fi
 
@@ -59,7 +62,8 @@ if [ -z $RUN_LOCAL ]; then
   python ${train_file} --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
 else
   echo "RUN_LOCAL mode set, run code from this directory..."
-  python ${train_file} --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME}
+  # --override_cfg = use the local cfg file, not the one in the experiment directory
+  python ${train_file} --cfg=$CFG_ABS_PATH --savedir=${SAVEDIR}/${EXP_NAME} --override_cfg
 fi
 echo "Current working directory: " `pwd`
 

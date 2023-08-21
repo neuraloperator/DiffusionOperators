@@ -45,15 +45,11 @@ git checkout 8a0f526
 pip install -e .
 #+end_src
 
-Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. Currently this file represents my own personal development environment, therefore it will /need to be modified/ to reflect /your/ desired environment, specifically one that has the aforementioned requirements installed (e.g. PyTorch, neural operators, etc.):
+Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. First run =cp env.sh.bak env.sh= and then modify =env.sh= so that both a save directory and a data diretory is defined:
 
 #+begin_src bash
 
 # env.sh
-
-# Load your virtualenv/conda env here that has the above
-# requirements installed.
-# ...
 
 # Specify directory to save results to
 export SAVEDIR=...
