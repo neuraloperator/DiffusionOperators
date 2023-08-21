@@ -44,6 +44,7 @@ cd ..
 
 # If code does not exist for this experiment, copy
 # it over. Then cd into that directory and run the code
+if [ -z $RUN_LOCAL ]; then
 if [ ! -d ${SAVEDIR}/${EXP_NAME}/code ]; then
   mkdir -p ${SAVEDIR}/${EXP_NAME}
   echo "Copying code..."
@@ -52,6 +53,7 @@ if [ ! -d ${SAVEDIR}/${EXP_NAME}/code ]; then
     echo "rsync returned error, terminating..."
     exit 1
   fi
+fi
 fi
 
 if [ -z $RUN_LOCAL ]; then
