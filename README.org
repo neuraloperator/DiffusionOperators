@@ -157,15 +157,23 @@ The main flags to be aware of here are:
 We have a separate evaluation script which can be used to dump samples to disk, as well as evaluating the validation metrics used but on a larger set of samples. To generate samples, we run:
 
 #+begin_src bash
-bash launch_eval.py sbgm <experiment name>/<id> --mode=generate
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name>/<id> --mode=generate
 #+end_src
 
-This script will dump various pkl files out to =<experiment name>/eval=. 
+This script will dump various pkl files out to =<experiment name>/eval= which are used for subsequent scripts.
 
-If we want actual png/pdf files of those samples to be created in that directory, simply run:
+To produce histogram / Wasserstein distance plots for the generated samples, simply run:
 
 #+begin_src bash
-bash launch_eval.py sbgm <experiment name>/<id> --mode=plot
+python plot_stats.py \
+--exp_name=$SAVEDIR/<experiment name>/<id> \ --stats_filename=eval/stats.model.w_total.pt.pkl \
+--out_filename=<out filename>.pdf
+#+end_src
+
+To generate samples which can be visualised, simply run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name>/<id> --mode=plot
 #+end_src
 
 To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt= (i.e. =--checkpoint=model.w_total.pt=) which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
@@ -181,9 +189,11 @@ tar -xvzf indep-checkpoint.tar.gz
 The directory =$SAVEDIR/tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
 
 #+begin_src bash
-bash launch_eval.py sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=generate
+RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=generate
+#+end_src bash
 
-bash launch_eval.py sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=plot
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=plot
 #+end_src
 
 *** RBF experiment (structured noise)
@@ -197,16 +207,31 @@ tar -xvzf rbf-checkpoint.tar.gz
 The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
 
 #+begin_src bash
-bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=generate
+RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=generate
+#+end_src bash
 
-bash launch_eval.py sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=plot
+To generate the histograms, run:
+
+#+begin_src bash
+python plot_stats.py \
+--exp_name=$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092 \
+--stats_filename=eval/stats.model.w_total.pt.pkl \
+--out_filename=stats.pdf
+#+end_src bash
+
+(this will output a =stats.pdf= in the current directory)
+
+[[./assets/stats_github.png]]
+
+To generate images, run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=plot
 #+end_src
 
-Here are some example outputs:
+(this will output images in the =samples= subdirectory of the experiment folder)
 
-[[./assets/final_stats.png]]
-
-[[./assets/rbf_samples_wtotal.png]]
+[[./assets/samples_github.png]]
 
 *** Super-resolution
 
@@ -223,8 +248,32 @@ To perform super-res generation for any of them, run:
 #+begin_src bash
 
 # e.g. <name> = tmp2000_rbf_pred-noise_eqn1c_64px/3431835
-bash launch_eval.py sbgm <experiment name> --checkpoint=model.w_total.pt --mode=superres
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name> --checkpoint=model.w_total.pt --mode=superres
 
-bash launch_eval.py sbgm <experiment name> --checkpoint=model.w_total.pt --mode=plot
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name> --checkpoint=model.w_total.pt --mode=plot
 #+end_src
+
+For example, for our best performing experiment (an RBF scale of 0.2), generate the histograms with:
+
+#+begin_src bash
+python plot_stats.py \
+--exp_name=$SAVEDIR/tmp2000_rbf_pred-noise_eqn1c_64px/3431834 \
+--stats_filename=eval/stats_2x.model.w_total.pt.pkl \
+--gt_stats_filename=eval/gt_stats_2x.pkl \
+--out_filename=stats_superres.pdf
+#+end_src
+
+(note the specification of =gt_stats_filename=eval/gt_stats_2x.pkl=, we want to compare to the original 120px ground truth images, not the 60px ones)
+
+[[./assets/sr_stats_github.png]]
+
+To generate images, run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise_eqn1c_64px/3431834" --checkpoint=model.w_total.pt --mode=plot
+#+end_src
+
+(this will output images in the =samples= subdirectory of the experiment folder)
+
+[[./assets/sr_samples_github.png]]
 
