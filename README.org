@@ -166,7 +166,8 @@ To produce histogram / Wasserstein distance plots for the generated samples, sim
 
 #+begin_src bash
 python plot_stats.py \
---exp_name=$SAVEDIR/<experiment name>/<id> \ --stats_filename=eval/stats.model.w_total.pt.pkl \
+--exp_name=$SAVEDIR/<experiment name>/<id> \
+--stats_filename=eval/stats.<checkpoint>.pkl \
 --out_filename=<out filename>.pdf
 #+end_src
 
@@ -189,11 +190,17 @@ tar -xvzf indep-checkpoint.tar.gz
 The directory =$SAVEDIR/tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
 
 #+begin_src bash
-RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=generate
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" \
+--checkpoint=model.w_total.pt \
+--mode=generate
 #+end_src bash
 
 #+begin_src bash
-RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" --checkpoint=model.w_total.pt --mode=plot
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" \
+--checkpoint=model.w_total.pt \
+--mode=plot
 #+end_src
 
 *** RBF experiment (structured noise)
@@ -207,7 +214,10 @@ tar -xvzf rbf-checkpoint.tar.gz
 The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
 
 #+begin_src bash
-RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=generate
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise-b_repeat/3307092" \
+--checkpoint=model.w_total.pt \
+--mode=generate
 #+end_src bash
 
 To generate the histograms, run:
@@ -226,7 +236,10 @@ python plot_stats.py \
 To generate images, run:
 
 #+begin_src bash
-RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise-b_repeat/3307092" --checkpoint=model.w_total.pt --mode=plot
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise-b_repeat/3307092" \
+--checkpoint=model.w_total.pt \
+--mode=plot
 #+end_src
 
 (this will output images in the =samples= subdirectory of the experiment folder)
@@ -248,9 +261,10 @@ To perform super-res generation for any of them, run:
 #+begin_src bash
 
 # e.g. <name> = tmp2000_rbf_pred-noise_eqn1c_64px/3431835
-RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name> --checkpoint=model.w_total.pt --mode=superres
-
-RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name> --checkpoint=model.w_total.pt --mode=plot
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+<experiment name>/<id> \
+--checkpoint=model.w_total.pt \
+--mode=superres
 #+end_src
 
 For example, for our best performing experiment (an RBF scale of 0.2), generate the histograms with:
@@ -270,7 +284,10 @@ python plot_stats.py \
 To generate images, run:
 
 #+begin_src bash
-RUN_LOCAL=1 bash launch_eval.sh sbgm "tmp2000_rbf_pred-noise_eqn1c_64px/3431834" --checkpoint=model.w_total.pt --mode=plot
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise_eqn1c_64px/3431834" \
+--checkpoint=model.w_total.pt \
+--mode=plot
 #+end_src
 
 (this will output images in the =samples= subdirectory of the experiment folder)
