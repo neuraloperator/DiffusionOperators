@@ -72,7 +72,7 @@ if __name__ == "__main__":
     cfg = DotDict(json.loads(open(os.path.join(expdir, "config.json"), "r").read()))
     # print(cfg)
 
-    print(json.dumps(cfg, indent=4))
+    logger.debug(json.dumps(cfg, indent=4))
 
     (
         fno,
@@ -190,19 +190,27 @@ if __name__ == "__main__":
             idcs = torch.randperm(samples.size(0))
             samples = samples[idcs]
 
-            for c in range(4):
-                this_outfile = "samples{}.{}.{}.png".format(postfix, args.checkpoint, c)
-                logger.info("Saving: {} ...".format(this_outfile))
-                plot_samples_grid(
-                    # TODO
-                    samples[(c*20):(c+1)*20],
-                    nrow_ncol=(4,5),
-                    outfile=os.path.join(
-                        args.savedir, this_outfile
-                    ),
-                    figsize=(12, 8)
-                    # title=str(dict(epoch=ep+1, var=best_var))
-                )
+            save_presets = [
+                {'nrow_ncol': (4,4), 'figsize': (8,8), 'name': '4x4'},
+                {'nrow_ncol': (4,5), 'figsize': (12,8), 'name': '4x5'}
+            ]
+            for this_preset in save_presets:
+                logger.info("Current preset: {}".format(this_preset))
+                for c in range(4):
+                    this_outfile = "samples{}.{}.{}.{}.png".format(
+                        postfix, args.checkpoint, this_preset['name'], c
+                    )
+                    logger.info("Saving: {} ...".format(this_outfile))
+                    plot_samples_grid(
+                        # TODO
+                        samples[(c*20):(c+1)*20],
+                        nrow_ncol=this_preset['nrow_ncol'],
+                        outfile=os.path.join(
+                            args.savedir, this_outfile
+                        ),
+                        figsize=this_preset['figsize']
+                        # title=str(dict(epoch=ep+1, var=best_var))
+                    )
 
             x_train = train_dataset.dataset.x_train
             mean_train_set = x_train.mean(dim=0, keepdim=True)
@@ -210,12 +218,12 @@ if __name__ == "__main__":
             mean_sample_set = (
                 samples.mean(dim=0, keepdim=True).detach().cpu()
             )
-            print(
+            logger.debug(
                 "min max of mean train set: {:.3f}, {:.3f}".format(
                     mean_train_set.min(), mean_train_set.max()
                 )
             )
-            print(
+            logger.debug(
                 "min max of mean sample set: {:.3f}, {:.3f}".format(
                     mean_sample_set.min(), mean_sample_set.max()
                 )
