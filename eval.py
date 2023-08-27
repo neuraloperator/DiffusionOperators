@@ -192,7 +192,8 @@ if __name__ == "__main__":
 
             save_presets = [
                 {'nrow_ncol': (4,4), 'figsize': (8,8), 'name': '4x4'},
-                {'nrow_ncol': (4,5), 'figsize': (12,8), 'name': '4x5'}
+                {'nrow_ncol': (4,5), 'figsize': (12,8), 'name': '4x5'},
+                {'nrow_ncol': (4,3), 'figsize': (6,8), 'name': '4x3'}
             ]
             for this_preset in save_presets:
                 logger.info("Current preset: {}".format(this_preset))
