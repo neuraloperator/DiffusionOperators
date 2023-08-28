@@ -1,0 +1,296 @@
+* Diffusion Operators
+
+This is Chris Beckham's code to run diffusion operators (score matching with neural operators), to accompany the following paper:
+
+#+begin_src
+@article{lim2023score,
+  title={Score-based diffusion models in function space},
+  author={Lim, Jae Hyun and Kovachki, Nikola B and Baptista, Ricardo and Beckham, Christopher and Azizzadenesheli, Kamyar and Kossaifi, Jean and Voleti, Vikram and Song, Jiaming and Kreis, Karsten and Kautz, Jan and others},
+  journal={arXiv preprint arXiv:2302.07400},
+  year={2023}
+}
+#+end_src
+
+This repository was developed on a cluster that implements Slurm for scheduling and running experiments, and therefore it is built accommodating its various intricacies. However running jobs without it is also supported here.
+
+** Installation
+
+Python >= 3.7 is required. The following dependencies are required:
+
+- =torch= (>=1.12 should work)
+- =torchvision= (>=0.13.1 should work)
+- =scipy=
+- =omegaconf=
+- =neuraloperator= ([[https://github.com/neuraloperator/neuraloperator][github]])
+  - specifically commit =8a0f526=, I haven't tested with newer versions yet so I don't know if they break the pretrained checkpoints
+- =tqdm=
+
+To create a Conda environment with the aforementioned dependencies, you can more or less run the following:
+
+#+begin_src bash
+
+conda create --prefix <env dir>/<my env name> python=3.9
+conda activate <env dir>/<my env name>
+
+# Install pytorch
+pip install torch==1.12.1+cu116 torchvision==0.13.1+cu116 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu116
+pip install omegaconf tqdm scipy  opencv-python matplotlib
+
+# Install neuraloperator
+git clone https://github.com/neuraloperator/neuraloperator
+cd neuraloperator
+pip install -r requirements.txt
+# This repo was developed under the following commit hash, though newer versions may work (yet to be tested).
+git checkout 8a0f526
+pip install -e .
+#+end_src
+
+Before we start running experiments we need to set up =env.sh=, which is in the =exps= directory. First run =cp env.sh.bak env.sh= and then modify =env.sh= so that both a save directory and a data diretory is defined:
+
+#+begin_src bash
+
+# env.sh
+
+# Specify directory to save results to
+export SAVEDIR=...
+# Specify directory where volcano data is
+export DATA_DIR=...
+
+#+end_src
+
+When this is done, run =source env.sh=.
+
+*** Dataset
+
+The dataset used is Volcano and can be downloaded [[https://drive.google.com/file/d/1WgEOpawpyV_1lf80zpkz47VNtVqHR3ZK/view][here]]. Download it to your dataset directory specified by =$DATA_DIR= (in =env.sh=) and extract it by running:
+
+#+begin_src bash
+cd $DATA_DIR
+tar -xvf InSAR_Volcano.tar
+#+end_src
+
+After this, your =$DATA_DIR= should contain a folder called =subset_128= such that this following directory =$DATA_DIR/subset_128/= exists and has all the necessary files inside it.
+
+For more details on the Volcano dataset, please consult the [[https://arxiv.org/abs/2205.03017][GANO paper]]:
+
+#+begin_src
+@article{rahman2022generative,
+  title={Generative adversarial neural operators},
+  author={Rahman, Md Ashiqur and Florez, Manuel A and Anandkumar, Anima and Ross, Zachary E and Azizzadenesheli, Kamyar},
+  journal={arXiv preprint arXiv:2205.03017},
+  year={2022}
+}
+#+end_src
+
+** Running diffusion experiments
+
+To run a diffusion experiment /locally/, simply cd into =exps= and run:
+
+#+begin_src 
+RUN_LOCAL=1 bash main.sh sbgm <experiment name> <json file>
+#+end_src
+
+where =<json file>= is one of the files in =exps/json= and specifies the inputs and hyperparameters to an experiment. (All hyperparameters are documented in the =Arguments= dataclass which you can find in =train.py=.) The =RUN_LOCAL= command simply says that the code should be run from the parent directory of =exps=, rather than copy the code over to =$SAVEDIR/<id>/<experiment name>= and run from there (the latter should only be done when an actual experiment is being launched from Slurm).
+
+The above command executes an experiment and creates a results in =$SAVEDIR/<slurm job id>/<experiment name>=. Various files get saved here, but the most important ones are:
+
+- =config.json=: the configuration of the experiment, which is basically the hyperparameters specified in =<json file>= as well as any default hyperparameters that were not specified.
+- =results.json=: a text file, where each row is a json data structure indicating per epoch metrics. 
+- =model.<valid metric>.pt=: this code implements three validation metrics: the Wasserstein distance between the real/generated skew histograms (=w_skew=) the same for variance (=w_var=) and the sum of them =w_total=. Each time a new smallest value is found for any of these three metrics, a new checkpoint is saved to the file =model.<valid metric>.pt=.
+
+For Slurm-enabled clusters, simply run:
+
+#+begin_src  bash
+sbatch launch_exp.sh sbgm <experiment name> <json file>
+#+end_src
+
+Note that the SBATCH flags at the header of =launch_exp.sh= should be modified according to what is appropriate for /your/ cluster environment (e.g. GPU selected, available memory, etc.). Again, the SBATCH flags provided are specific to to my own development environment.
+
+If you are not running this on a Slurm environment, then you should also define =SLURM_JOB_ID= to something that can uniquely identify your experiment. For instance, we can just use the Unix timestamp:
+
+#+begin_src 
+RUN_LOCAL=1 SLURM_JOB_ID=`date +%s` bash main.sh <experiment name> <json file>
+#+end_src
+
+*** Visualisations
+
+In the results directory =$SAVEDIR/<slurm job id>/<experiment name>=, the following things are saved periodically:
+
+- =noise/noise_samples.{pdf,png}=: samples from the noise distribution used.
+- =noise/init_samples.{pdf,png}=: ignore this, it should be the same as the above.
+- =noise/noise_sampler_C.{pdf,png}=: the first 200 cols/rows of the computed covariance matrix.
+- =u_noised.png=: for a random image (function) from the training set =u=, show the function =u + c * z=, where =c= is a coefficient from =σ_1= to =σ_L= and =z= is a sample from the noise distribution.
+- =samples/<epoch>.{pdf,png}=: samples generated from the model after this particular epoch of training.
+
+** Reproducing experiments
+
+Experiments are run by running a launch script that specifies (1) the type of model being trained (either =sbgm= or =gano=); (2) the name of the experiment (user chosen) and (3) the path to a json file which details all of the hyperparameters to be used. (To see what hyperparameters exist, please consult the =Arguments= dataclass in =train.py=.)
+
+For the following commands, if /you are not using Slurm/, simply set =SLURM_JOB_ID= to your own unique identifier and launch with =bash= instead of =sbatch=.
+
+*** Baseline experiment (independent noise)
+
+cd into =exps= and run:
+
+#+begin_src bash
+sbatch launch_exp.sh sbgm indep_experiment json/indep-copied.json
+#+end_src
+
+The main flag to be aware of here is =white_noise= and should be set to =true=. When this is true, the =rbf*= flags are ignored.
+
+*** RBF experiment (structured noise)
+
+cd into =exps= and run:
+
+#+begin_src bash
+sbatch launch_exp.sh sbgm rbf_experiment json/rbf-copied.json
+#+end_src
+
+The main flags to be aware of here are:
+
+- =rbf_scale= (the smoothness parameter of the RBF kernel, larger values correspond to smoother noise)
+- =rbf_eps= (regularisation factor for the covariance matrix so the Cholesky decomposition is stable)
+- =white_noise= (should be set to =false=)
+
+** Reproducing evaluation
+
+We have a separate evaluation script which can be used to dump samples to disk, as well as evaluating the validation metrics used but on a larger set of samples. To generate samples, we run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name>/<id> --mode=generate
+#+end_src
+
+This script will dump various pkl files out to =<experiment name>/eval= which are used for subsequent scripts.
+
+To produce histogram / Wasserstein distance plots for the generated samples, simply run:
+
+#+begin_src bash
+python plot_stats.py \
+--exp_name=$SAVEDIR/<experiment name>/<id> \
+--stats_filename=eval/stats.<checkpoint>.pkl \
+--out_filename=<out filename>.pdf
+#+end_src
+
+To generate samples which can be visualised, simply run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm <experiment name>/<id> --mode=plot
+#+end_src
+
+To see what additional flags are supported, check out the argparse flags in =eval.py=. For example, by default the checkpoint used is =model.w_total.pt= (i.e. =--checkpoint=model.w_total.pt=) which is the model checkpoint corresponding to the smallest observed validation metric =w_total=.
+
+*** Baseline experiment (independent noise)
+
+Download the pretrained checkpoint [[https://drive.google.com/file/d/1LVPE84WtgyZn4rTRWfquuuS42zEzjbt3/view?usp=sharing][here]]. Extract it to your =$SAVEDIR= and run:
+
+#+begin_src bash
+tar -xvzf indep-checkpoint.tar.gz
+#+end_src
+
+The directory =$SAVEDIR/tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" \
+--checkpoint=model.w_total.pt \
+--mode=generate
+#+end_src bash
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp100_diffusion_uno-fnoblock_properconv_ngf128_tucker/3068817" \
+--checkpoint=model.w_total.pt \
+--mode=plot
+#+end_src
+
+*** RBF experiment (structured noise)
+
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1zLFWZ3JOYAiDUkCJOFY1ma_Nqc56MOET/view?usp=drive_link][here]]. Extract it to your =$SAVEDIR= and run:
+
+#+begin_src bash
+tar -xvzf rbf-checkpoint.tar.gz
+#+end_src
+
+The directory =$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092= should exist if you have extracted the checkpoint correctly. Then cd back into this repo then =exps= then run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise-b_repeat/3307092" \
+--checkpoint=model.w_total.pt \
+--mode=generate
+#+end_src bash
+
+To generate the histograms, run:
+
+#+begin_src bash
+python plot_stats.py \
+--exp_name=$SAVEDIR/tmp2000_rbf_pred-noise-b_repeat/3307092 \
+--stats_filename=eval/stats.model.w_total.pt.pkl \
+--out_filename=stats.pdf
+#+end_src bash
+
+(this will output a =stats.pdf= in the current directory)
+
+[[./assets/stats_github.png]]
+
+To generate images, run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise-b_repeat/3307092" \
+--checkpoint=model.w_total.pt \
+--mode=plot
+#+end_src
+
+(this will output images in the =samples= subdirectory of the experiment folder)
+
+[[./assets/samples_github.png]]
+
+*** Super-resolution
+
+Here we train diffusion operators on the original images downsampled to 60px. At generation time, we sample noise that is twice that resolution, effectively performing super-resolution from 60px to 120px.
+
+Download the pre-trained checkpoint [[https://drive.google.com/file/d/1Z9VPip67MpBk68ZGGKZZBJYspYORgZ9b/view?usp=sharing][here]] and extract it to your =$SAVEDIR=. This tarfile contains the following experiments, each varies by the amount of RBF kernel smoothness used:
+
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431833 -> rbf_scale = 0.05=
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431835 -> rbf_scale = 0.1=
+- =tmp2000_rbf_pred-noise_eqn1c_64px/3431834 -> rbf_scale = 0.2=
+
+To perform super-res generation for any of them, run:
+
+#+begin_src bash
+
+# e.g. <name> = tmp2000_rbf_pred-noise_eqn1c_64px/3431835
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+<experiment name>/<id> \
+--checkpoint=model.w_total.pt \
+--mode=superres
+#+end_src
+
+For example, for our best performing experiment (an RBF scale of 0.2), generate the histograms with:
+
+#+begin_src bash
+python plot_stats.py \
+--exp_name=$SAVEDIR/tmp2000_rbf_pred-noise_eqn1c_64px/3431834 \
+--stats_filename=eval/stats_2x.model.w_total.pt.pkl \
+--gt_stats_filename=eval/gt_stats_2x.pkl \
+--out_filename=stats_superres.pdf
+#+end_src
+
+(note the specification of =gt_stats_filename=eval/gt_stats_2x.pkl=, we want to compare to the original 120px ground truth images, not the 60px ones)
+
+[[./assets/sr_stats_github.png]]
+
+To generate images, run:
+
+#+begin_src bash
+RUN_LOCAL=1 bash launch_eval.sh sbgm \
+"tmp2000_rbf_pred-noise_eqn1c_64px/3431834" \
+--checkpoint=model.w_total.pt \
+--mode=plot
+#+end_src
+
+(this will output images in the =samples= subdirectory of the experiment folder)
+
+[[./assets/sr_samples_github.png]]
+
