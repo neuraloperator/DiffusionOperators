@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torchvision import transforms
 
 from src.datasets import VolcanoDataset
-from src.models import UNO
+from src.models import UNO_Diffusion
 from src.util.ema import EMAHelper
 from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
                                        PeriodicGaussianRF2d)
@@ -63,7 +63,6 @@ class Arguments:
     schedule: str = None            # either 'geometric' or 'linear'
 
     resolution: Union[int, None] = None # dataset resolution
-    npad: int = 8                   # how much input padding in UNO
 
     epsilon: float = 2e-5           # step size to use during generation (SGLD)
     sigma_1: float = 1.0            # variance of largest noise distribution
@@ -76,6 +75,8 @@ class Arguments:
 
     factorization: str = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
+
+    npad: int = 8
 
     scale_factor: float = 1.0       # if < 1, downsize dataset by this amount.
     d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
@@ -120,7 +121,6 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
     dataset = VolcanoDataset(
         root=datadir,
         resolution=args.resolution,
-        crop=args.npad,
         transform=transform
     )
     rnd_state = np.random.RandomState(seed=0)
@@ -150,16 +150,9 @@ def sample(
 
     for _ in range(n_batches):
         u = noise_sampler.sample(bs)
-        res = u.size(1)
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
-        u = u.view(bs, -1)  # (bs, res*res*2)
-        u = u[~torch.any(u.isnan(), dim=1)]
-        # try:
-        u = u.view(-1, res, res, 2)  # (bs, res, res, 2)
-        # except:
-        #    continue
         if fns is not None:
             for fn_name, fn_apply in fns.items():
                 fn_outputs[fn_name].append(fn_apply(u).cpu())
@@ -190,7 +183,7 @@ def score_matching_loss(fno, u, sigma, noise_sampler):
     # noise = sqrt(sigma_i) * (L * epsilon)
     # loss = || noise + sigma_i * F(u+noise) ||^2
     noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
-    term1 = this_sigmas * fno(u+noise, idcs, this_sigmas)
+    term1 = this_sigmas * fno(u+noise, this_sigmas)
     term2 = noise
 
     res_sq = u.size(1) * u.size(2)
@@ -211,20 +204,17 @@ def init_model(args, savedir, checkpoint="model.pt"):
     train_dataset, valid_dataset = get_dataset(args)
 
     # Initialise the model
-    logger.debug("res: {}, crop = {}, dataset.x_train = {}".format(
-        args.resolution, args.npad, train_dataset.dataset.x_train.shape
+    logger.debug("res: {}, dataset.x_train.shape = {}".format(
+        args.resolution, train_dataset.dataset.x_train.shape
     ))
-    fno = UNO(
-        2,
-        args.d_co_domain,
-        s=train_dataset.dataset.res,
-        pad=args.npad,
+    fno = UNO_Diffusion(
+        in_channels=2,
+        out_channels=2,
+        base_width=args.d_co_domain,
+        spatial_dim=train_dataset.dataset.res,
+        npad=args.npad,
         fmult=args.fmult,
-        groups=args.groups,
         factorization=args.factorization,
-        rank=args.rank,
-        num_freqs_input=args.num_freqs_input,
-        mult_dims=args.mult_dims,
     ).to(device)
     # (fno)
     logger.info("# of trainable parameters: {}".format(count_params(fno)))
@@ -404,7 +394,7 @@ def run(args: Arguments, savedir: str):
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             loss = score_matching_loss(fno, u, sigma, noise_sampler)
 
-            """
+            #"""
             u, fn_outs = sample(
                 fno,
                 noise_sampler,
@@ -415,7 +405,7 @@ def run(args: Arguments, savedir: str):
                 epsilon=args.epsilon,
                 fns={"skew": circular_skew, "var": circular_var},
             )
-            """
+            #"""
 
             loss.backward()
             optimizer.step()

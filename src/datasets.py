@@ -56,7 +56,7 @@ class VolcanoDataset(FunctionDataset):
       be padding each edge as well.
     """
 
-    def __init__(self, root, ntrain=4096, resolution=None, crop=8, transform=None):
+    def __init__(self, root, ntrain=4096, resolution=None, transform=None):
 
         super().__init__()
 
@@ -70,35 +70,23 @@ class VolcanoDataset(FunctionDataset):
         if resolution is None:
             resolution = 128
 
-        actual_res = resolution - crop
         X_buf = torch.zeros(ntrain, 2, 128, 128).float()
         for i, f in enumerate(files):
             dtype = np.float32
-
             with open(f, 'rb') as fn:
                 load_arr = np.frombuffer(fn.read(), dtype=dtype)
                 img = np.array(load_arr.reshape((128, 128, -1)))
-
             phi = np.angle(img[:,:,0] + img[:,:,1]*1j)            
             X_buf[i,0,:,:] = torch.cos(torch.tensor(phi))
             X_buf[i,1,:,:] = torch.sin(torch.tensor(phi))
-
-        X_buf = F.interpolate(X_buf, size=(resolution, resolution),
-                              mode='bilinear')
-        X_buf = X_buf[:, :, :actual_res, :actual_res].\
-            transpose(1, 2).transpose(2, 3)
+        X_buf = X_buf.transpose(1, 2).transpose(2, 3)
 
         self.x_train = X_buf
         self.transform = transform
-        self.crop = crop
 
     @property
     def X(self):
         return self.x_train
-
-    @property
-    def npad(self):
-        return self.padding
 
     @property
     def res(self):

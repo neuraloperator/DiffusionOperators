@@ -121,9 +121,9 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         curr_j = torch.LongTensor([j]*x0.size(0)).to(x0.device)
         for t in range(T):
             if j == L - 1 and t == T - 1:
-                x0 = x0 + 0.5*alpha*score(x0, curr_j, sigma[j].view(1,1,1,1))
+                x0 = x0 + 0.5*alpha*score(x0, sigma[j].view(1,1,1,1))
             else:
-                x0 = x0 + 0.5*alpha*score(x0, curr_j, sigma[j].view(1,1,1,1)) + \
+                x0 = x0 + 0.5*alpha*score(x0, sigma[j].view(1,1,1,1)) + \
                     torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
         if verbose:
             pbar.update(1)
