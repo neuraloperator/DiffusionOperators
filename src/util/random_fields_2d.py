@@ -189,7 +189,6 @@ class GaussianRF_RBF(object):
 
         return sample_rshp
 
-
 class IndependentGaussian(object):
     def __init__(self, Ln1, Ln2, sigma=1, device=None):
         self.Ln1 = Ln1

@@ -15,8 +15,9 @@ class UNO_Diffusion(nn.Module):
                  out_channels: int,
                  base_width: int,
                  spatial_dim: int,
-                 npad: int,
+                 npad: int, 
                  fmult: float,
+                 rank: float = 1.0,
                  factorization: str = None,):
         super().__init__()
         
@@ -56,6 +57,7 @@ class UNO_Diffusion(nn.Module):
             uno_n_modes=n_modes,
             uno_scalings=uno_scalings,
             factorization=factorization,
+            rank=rank,
             domain_padding_mode='symmetric',
             domain_padding=pad_factor,
         )

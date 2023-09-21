@@ -69,6 +69,7 @@ class Arguments:
     sigma_L: float = 0.01           # variance of smallest noise distribution
     T: int = 100                    # how many SGLD steps to do per noise schedule
     L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
+    lambda_fn: str = '1/s'          # what weighting function do we use?
 
     rbf_scale: float = 1.0          # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01           # stability term for cholesky decomposition of covariance C
@@ -88,13 +89,14 @@ class Arguments:
     # to more parameters / memory.
     fmult: float = 0.25
     
-    rank: float = 1.0               # rank coefficient, a specific kwarg in FNOBlocks
+    rank: float = 1.0               # factorisation coefficient
     groups: int = 0                 # number of groups for group norm
 
     lr: float = 1e-3                # learning rate for training
     Ntest: int = 1024               # number of samples to compute for validation metrics
     num_workers: int = 2            # number of cpu workers
     ema_rate: Union[float, None] = None # moving average coefficient for EMA
+    dry_run: bool = False
 
 def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
     """Return training and validation split of dataset
@@ -172,26 +174,27 @@ def sample(
     return buf, fn_outputs
 
 
-def score_matching_loss(fno, u, sigma, noise_sampler):
-    """
-    """
+def score_matching_loss(fno, u, sigma, noise_sampler, 
+                        lambda_fn):
 
     bsize = u.size(0)
-    # Sample a noise scale per element in the minibatch
-    idcs = torch.randperm(sigma.size(0))[0:bsize].to(u.device)
-    this_sigmas = sigma[idcs].view(-1, 1, 1, 1)
-    # noise = sqrt(sigma_i) * (L * epsilon)
-    # loss = || noise + sigma_i * F(u+noise) ||^2
-    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
-    term1 = this_sigmas * fno(u+noise, this_sigmas)
+    # loss = \lambda(sigma) || F(u+noise) + noise ||^2
+    # and noise = \sqrt(sigma_i) L \epsilon, \epsilon ~ N(0,I).
+    noise = torch.sqrt(sigma) * noise_sampler.sample(bsize)
+    term1 = fno(u+noise, sigma)
     term2 = noise
 
     res_sq = u.size(1) * u.size(2)
     terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
 
-    loss = (terms_flattened**2).mean()
+    # shape (bs,)
+    weights = lambda_fn(sigma).flatten()
+    # shape (bs,)
+    loss = (terms_flattened**2).mean(dim=(1,2))
 
-    return loss
+    weighted_loss = (weights*loss).mean()
+
+    return weighted_loss
 
 def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
@@ -213,6 +216,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         base_width=args.d_co_domain,
         spatial_dim=train_dataset.dataset.res,
         npad=args.npad,
+        rank=args.rank,
         fmult=args.fmult,
         factorization=args.factorization,
     ).to(device)
@@ -299,6 +303,33 @@ def init_model(args, savedir, checkpoint="model.pt"):
         (noise_sampler, sigma),
     )
 
+@torch.no_grad()
+def generate_loss_distribution(loader, fno, sigmas, noise_sampler, lambda_fn):
+    """Evaluate the loss for each possible value of sigma.
+      Useful to plot for diagnostics.
+
+    Args:
+        loader (_type_): _description_
+        fno (_type_): _description_
+        sigmas (_type_): _description_
+        noise_sampler (_type_): _description_
+    """
+    buf = []
+    # Construct noise distribution for plotting.
+    _iter = iter(loader)
+    for j in range(len(sigmas)):
+        try:
+            u = next(_iter).to(device)
+            sampled_sigma = sigmas[j].expand(u.size(0), 1, 1, 1).to(device)
+            loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn)
+            buf.append(loss.item())
+            print(buf[-1])
+        except StopIteration:
+            _iter = iter(loader)
+        finally:
+            pass
+    return buf
+
 
 def run(args: Arguments, savedir: str):
 
@@ -378,6 +409,25 @@ def run(args: Arguments, savedir: str):
             metric_trackers[key].load_state_dict(val_metrics[key])
             logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
+    if args.lambda_fn == '1/s':
+        lambda_fn = lambda x: 1. / x
+    elif args.lambda_fn == '1/s^2':
+        lambda_fn = lambda x: 1. / (x**2)
+    elif args.lambda_fn == 's^2':
+        lambda_fn = lambda x: (x**2)
+    else:
+        raise ValueError("lambda_fn must be either: '1/s', '1/s^2', or 's^2'")
+
+    if args.dry_run:
+        buf = generate_loss_distribution(
+            train_loader, 
+            fno, 
+            sigma, 
+            noise_sampler, 
+            lambda_fn
+        )
+        return
+
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
@@ -391,10 +441,19 @@ def run(args: Arguments, savedir: str):
 
             u = u.to(device)
 
+            # Sample a noise scale per element in the minibatch
+            idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
+            sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            loss = score_matching_loss(fno, u, sigma, noise_sampler)
+            loss = score_matching_loss(
+                fno, 
+                u, 
+                sampled_sigma, 
+                noise_sampler,
+                lambda_fn
+            )
 
-            #"""
+            """
             u, fn_outs = sample(
                 fno,
                 noise_sampler,
@@ -405,7 +464,7 @@ def run(args: Arguments, savedir: str):
                 epsilon=args.epsilon,
                 fns={"skew": circular_skew, "var": circular_var},
             )
-            #"""
+            """
 
             loss.backward()
             optimizer.step()
