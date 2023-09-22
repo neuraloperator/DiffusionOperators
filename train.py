@@ -95,8 +95,8 @@ class Arguments:
     lr: float = 1e-3                # learning rate for training
     Ntest: int = 1024               # number of samples to compute for validation metrics
     num_workers: int = 2            # number of cpu workers
+    N_measure_sigma: int = 10       # measure SM loss for every n sigma values
     ema_rate: Union[float, None] = None # moving average coefficient for EMA
-    dry_run: bool = False
 
 def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
     """Return training and validation split of dataset
@@ -418,16 +418,6 @@ def run(args: Arguments, savedir: str):
     else:
         raise ValueError("lambda_fn must be either: '1/s', '1/s^2', or 's^2'")
 
-    if args.dry_run:
-        buf = generate_loss_distribution(
-            train_loader, 
-            fno, 
-            sigma, 
-            noise_sampler, 
-            lambda_fn
-        )
-        return
-
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
@@ -452,7 +442,6 @@ def run(args: Arguments, savedir: str):
                 noise_sampler,
                 lambda_fn
             )
-
             """
             u, fn_outs = sample(
                 fno,
@@ -533,7 +522,10 @@ def run(args: Arguments, savedir: str):
         buf_valid = dict(loss_valid=[])
         for iter_, u in enumerate(valid_loader):
             u = u.to(device)
-            loss = score_matching_loss(fno, u, sigma, noise_sampler)
+            # Sample a noise scale per element in the minibatch
+            idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
+            sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
+            loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn)
             # Update total statistics
             buf_valid["loss_valid"].append(loss.item())
 
@@ -556,6 +548,26 @@ def run(args: Arguments, savedir: str):
                 )
                 skew_generated = fn_outs["skew"]
                 var_generated = fn_outs["var"]
+
+                # For N values of sigma, compute the mean score
+                # matching loss so that we can plot it as a fn
+                # of sigma.
+                loss_per_sigma = generate_loss_distribution(
+                    train_loader,
+                    fno, 
+                    sigma[0::args.N_measure_sigma], 
+                    noise_sampler,
+                    lambda_fn
+                )
+                if not os.path.exists(os.path.join(savedir, "losses")):
+                    os.makedirs(os.path.join(savedir, "losses"))
+                torch.save(
+                    dict(
+                        losses=torch.FloatTensor(loss_per_sigma), 
+                        sigmas=sigma[0::args.N_measure_sigma].cpu()
+                    ),
+                    os.path.join(savedir, "losses", "sigmas.{}.pt".format(ep + 1))
+                )
 
             # Dump this out to disk as well.
             w_skew = w_distance(skew_train, skew_generated)
