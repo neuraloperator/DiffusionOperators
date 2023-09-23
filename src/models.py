@@ -24,24 +24,36 @@ class UNO_Diffusion(nn.Module):
         # using [1,2,4,4] as mults
         bw = base_width                         # base width
         sdim = spatial_dim                      # spatial dim
+
         # Compared to the old code, we were also going from
         # 128 -> 96 -> 64 but maybe it's faster to just downscale
         # with powers of two.
         uno_scalings = [
             (0.5, 0.5),   # e.g. (128 -> 64)
-            (0.5, 0.5),   # e.g. (64 -> 32)    
-            (1.0, 1.0),   # e.g. (32 -> 32)
+            (0.5, 0.5),   # e.g. (64 -> 32)
+            (0.5, 0.5),   # e.g. (32 -> 16)
+            (0.5, 0.5),   # e.g. (16 -> 8) 
+            (1.0, 1.0),   # e.g. (8 -> 8)
+            (2.0, 2.0),   # e.g. (8 -> 16)
+            (2.0, 2.0),   # e.g. (16 -> 32)
             (2.0, 2.0),   # e.g. (32 -> 64)
             (2.0, 2.0),   # e.g. (64 -> 128),
         ]
+        
         # The number of fourier modes is just the resolution at that
         # layer multiplied by `fmult`.
         n_modes = []
         _curr_res = [sdim, sdim]
         for tp in uno_scalings:
-            _curr_res[0] = _curr_res[0]*tp[0]*fmult
-            _curr_res[1] = _curr_res[1]*tp[1]*fmult
-            n_modes.append((int(_curr_res[0]), int(_curr_res[1])))
+            _curr_res[0] = _curr_res[0]*tp[0]
+            _curr_res[1] = _curr_res[1]*tp[1]
+            n_modes.append(
+                ( int(fmult*_curr_res[0]), int(fmult*_curr_res[1]) )
+            )
+
+        logger.debug("fmult={}, n_modes={}".format(
+            fmult, n_modes
+        ))
 
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO(
@@ -52,9 +64,13 @@ class UNO_Diffusion(nn.Module):
             uno_out_channels=[
                 bw*2,
                 bw*4,
+                bw*4,
+                bw*4,
                 #
                 bw*4,
                 #
+                bw*4,
+                bw*4,
                 bw*4,
                 bw*2,
             ],
@@ -69,7 +85,7 @@ class UNO_Diffusion(nn.Module):
         """As per the paper 'Improved techniques for training SBGMs',
           define s(x; sigma_t) = f(x) / sigma_t.
         """        
-        x = x.swapaxes(-1,-2).swapaxes(-2,-3)     
+        x = x.swapaxes(-1,-2).swapaxes(-2,-3)
         result = self.uno(x) / sigmas
         return result.swapaxes(1,2).swapaxes(2,3)
 
