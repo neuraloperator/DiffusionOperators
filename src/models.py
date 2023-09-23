@@ -36,8 +36,12 @@ class UNO_Diffusion(nn.Module):
         ]
         # The number of fourier modes is just the resolution at that
         # layer multiplied by `fmult`.
-        n_modes = [ (int(x[0]*sdim*fmult), int(x[1]*sdim*fmult)) \
-            for x in uno_scalings ]
+        n_modes = []
+        _curr_res = [sdim, sdim]
+        for tp in uno_scalings:
+            _curr_res[0] = _curr_res[0]*tp[0]*fmult
+            _curr_res[1] = _curr_res[1]*tp[1]*fmult
+            n_modes.append((int(_curr_res[0]), int(_curr_res[1])))
 
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO(

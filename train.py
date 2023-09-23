@@ -69,12 +69,12 @@ class Arguments:
     sigma_L: float = 0.01           # variance of smallest noise distribution
     T: int = 100                    # how many SGLD steps to do per noise schedule
     L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
-    lambda_fn: str = '1/s'          # what weighting function do we use?
+    lambda_fn: str = 's^2'          # what weighting function do we use?
 
     rbf_scale: float = 1.0          # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01           # stability term for cholesky decomposition of covariance C
 
-    factorization: str = None       # factorization, a specific kwarg in FNOBlocks
+    factorization: Union[str,None] = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
 
     npad: int = 8
@@ -95,7 +95,7 @@ class Arguments:
     lr: float = 1e-3                # learning rate for training
     Ntest: int = 1024               # number of samples to compute for validation metrics
     num_workers: int = 2            # number of cpu workers
-    N_measure_sigma: int = 10       # measure SM loss for every n sigma values
+    N_measure_sigma: int = 100       # measure SM loss for every n sigma values
     ema_rate: Union[float, None] = None # moving average coefficient for EMA
 
 def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
@@ -176,22 +176,23 @@ def sample(
 
 def score_matching_loss(fno, u, sigma, noise_sampler, 
                         lambda_fn):
-
     bsize = u.size(0)
-    # loss = \lambda(sigma) || F(u+noise) + noise ||^2
+    # loss = \lambda(sigma) || F(u+noise; sigma) + Le/sqrt(sigma) ||^2
     # and noise = \sqrt(sigma_i) L \epsilon, \epsilon ~ N(0,I).
-    noise = torch.sqrt(sigma) * noise_sampler.sample(bsize)
+    eps_L = noise_sampler.sample(bsize)         # structured noise
+    noise = torch.sqrt(sigma) * eps_L           # scaled by variance
     term1 = fno(u+noise, sigma)
-    term2 = noise
+    term2 = eps_L * (1. / torch.sqrt(sigma))    # see my eqn 12 overleaf
 
     res_sq = u.size(1) * u.size(2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
 
+    # shape (bs, s^2, 2)
+    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
     # shape (bs,)
     weights = lambda_fn(sigma).flatten()
     # shape (bs,)
     loss = (terms_flattened**2).mean(dim=(1,2))
-
+    # compute mean over minibatch
     weighted_loss = (weights*loss).mean()
 
     return weighted_loss
@@ -409,14 +410,29 @@ def run(args: Arguments, savedir: str):
             metric_trackers[key].load_state_dict(val_metrics[key])
             logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
-    if args.lambda_fn == '1/s':
-        lambda_fn = lambda x: 1. / x
-    elif args.lambda_fn == '1/s^2':
-        lambda_fn = lambda x: 1. / (x**2)
-    elif args.lambda_fn == 's^2':
-        lambda_fn = lambda x: (x**2)
+    lambda_fns = {
+        '1/s': lambda x: 1. / x,
+        '1/s^2': lambda x: 1. / (x**2),
+        's^2': lambda x: (x**2),
+        'sqrt(s)': lambda x: torch.sqrt(x),
+        's': lambda x: x
+    }
+    if args.lambda_fn not in lambda_fns:
+        raise Exception("lambda_fn must be one of: {}".format(
+            list(lambda_fns.keys())
+        ))
     else:
-        raise ValueError("lambda_fn must be either: '1/s', '1/s^2', or 's^2'")
+        lambda_fn = lambda_fns[args.lambda_fn]
+
+    """
+    loss_per_sigma = generate_loss_distribution(
+       train_loader,
+        fno, 
+        sigma[0:args.N_measure_sigma],
+        noise_sampler,
+        lambda_fn=lambda_fn
+    )
+    """
 
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
@@ -549,25 +565,27 @@ def run(args: Arguments, savedir: str):
                 skew_generated = fn_outs["skew"]
                 var_generated = fn_outs["var"]
 
+                """
                 # For N values of sigma, compute the mean score
                 # matching loss so that we can plot it as a fn
                 # of sigma.
                 loss_per_sigma = generate_loss_distribution(
                     train_loader,
                     fno, 
-                    sigma[0::args.N_measure_sigma], 
+                    sigma[0:args.N_measure_sigma],
                     noise_sampler,
-                    lambda_fn
+                    lambda_fn=lambda x: x*0 + 1        # use unweighted loss
                 )
                 if not os.path.exists(os.path.join(savedir, "losses")):
                     os.makedirs(os.path.join(savedir, "losses"))
                 torch.save(
                     dict(
                         losses=torch.FloatTensor(loss_per_sigma), 
-                        sigmas=sigma[0::args.N_measure_sigma].cpu()
+                        sigmas=sigma[0:args.N_measure_sigma].cpu()
                     ),
                     os.path.join(savedir, "losses", "sigmas.{}.pt".format(ep + 1))
                 )
+                """
 
             # Dump this out to disk as well.
             w_skew = w_distance(skew_train, skew_generated)
