@@ -112,6 +112,7 @@ def sample_white(score, sigma, x0, epsilon=2e-5, T=200):
         
     return x0
 
+"""
 def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
     L = sigma.size(0)
     if verbose:
@@ -131,22 +132,45 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         pbar.close()
         
     return x0
+"""
 
-#@torch.jit.script
-def sample_trace_jit(scorenet, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
-    L = len(sigma)
-    T = int(T)
-    for j in range(L):
+def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
+    L = sigma.size(0)
+    if verbose:
+        pbar = tqdm(total=L, desc="sample_pc")
+    # sample x_N ~ N(0, sigma^2_{max})
+    x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
+    # need to flip order of sigmas for this algorithm
+    sigma = torch.flip(sigma, (0,))
+    for j in range(L-2, -1, -1):
+
+
+        import pdb; pdb.set_trace()
+        
+        # 'epsilon_i' in algorihm but we use alpha_i here
+        # and epsilon is the base lr.
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
-        curr_j = torch.LongTensor([j]*x0.size(0)).to(x0.device)
-        for t in range(T):
-            if j == L - 1 and t == T - 1:
-                x0 = x0 + 0.5*alpha*scorenet(x0, curr_j, sigma[j].view(1,1,1,1))
-            else:
-                x0 = x0 + 0.5*alpha*scorenet(x0, curr_j, sigma[j].view(1,1,1,1)) + \
-                    torch.sqrt(alpha)*noise_sampler.sample(x0.size(0))
+        pbar.set_description("alpha={}".format(alpha))
+        # Predictor:
+        # x' := x_{i+1} + (s_{i+1}**2 - s_i**2) * s(x_{i+1}, s_{i+1})
+        xtilde = x0 + (sigma[j+1]**2 - sigma[j]**2) * score(x0, sigma[j+1].view(1,1,1,1))
+        # z ~ N(0,I)
+        z = noise_sampler.sample(x0.size(0))
+        # x := x' + sqrt(...)*z
+        x0 = xtilde + torch.sqrt(sigma[j+1]**2 - sigma[j]**2) * z
+        # Corrector steps:
+        for _ in range(T):
+            z = noise_sampler.sample(x0.size(0))
+            x0 = x0 + alpha*score(x0, sigma[j].view(1,1,1,1)) + torch.sqrt(2*alpha)*z
+        if torch.isnan(x0).any().item():
+            raise ValueError("nans generated, you may have to decrease epsilon here")
+        if verbose:
+            pbar.update(1)
+    if verbose:
+        pbar.close()
         
     return x0
+
 
 # Plotting functions
 

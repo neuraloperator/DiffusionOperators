@@ -74,6 +74,7 @@ class UNO_Diffusion(nn.Module):
                 bw*4,
                 bw*2,
             ],
+            norm="instance_norm",
             uno_n_modes=n_modes,
             uno_scalings=uno_scalings,
             factorization=factorization,
@@ -81,6 +82,8 @@ class UNO_Diffusion(nn.Module):
             domain_padding_mode='symmetric',
             domain_padding=pad_factor,
         )
+        print(self.uno)
+        
     def forward(self, x: torch.FloatTensor, sigmas: torch.FloatTensor):
         """As per the paper 'Improved techniques for training SBGMs',
           define s(x; sigma_t) = f(x) / sigma_t.

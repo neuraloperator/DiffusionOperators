@@ -39,7 +39,7 @@ class EMAHelper(object):
                 self.shadow[name] = param.data.clone()
         self.module = module
 
-    def update(self, module):
+    def update(self):
         for name, param in self.module.named_parameters():
             if param.requires_grad:
                 self.shadow[name].data = (1. - self.mu) * param.data + \

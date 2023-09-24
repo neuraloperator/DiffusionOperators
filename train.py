@@ -424,16 +424,6 @@ def run(args: Arguments, savedir: str):
     else:
         lambda_fn = lambda_fns[args.lambda_fn]
 
-    """
-    loss_per_sigma = generate_loss_distribution(
-       train_loader,
-        fno, 
-        sigma[0:args.N_measure_sigma],
-        noise_sampler,
-        lambda_fn=lambda_fn
-    )
-    """
-
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
 
@@ -476,7 +466,7 @@ def run(args: Arguments, savedir: str):
             pbar.update(1)
 
             if ema_helper is not None:
-                ema_helper.update(fno)
+                ema_helper.update()
 
             metrics = dict(loss=loss.item())
             if iter_ % 10 == 0:
@@ -565,14 +555,14 @@ def run(args: Arguments, savedir: str):
                 skew_generated = fn_outs["skew"]
                 var_generated = fn_outs["var"]
 
-                """
                 # For N values of sigma, compute the mean score
                 # matching loss so that we can plot it as a fn
                 # of sigma.
+                """
                 loss_per_sigma = generate_loss_distribution(
                     train_loader,
-                    fno, 
-                    sigma[0:args.N_measure_sigma],
+                    fno,
+                    torch.flip(sigma, (0,))[0:args.N_measure_sigma],
                     noise_sampler,
                     lambda_fn=lambda x: x*0 + 1        # use unweighted loss
                 )
@@ -583,7 +573,7 @@ def run(args: Arguments, savedir: str):
                         losses=torch.FloatTensor(loss_per_sigma), 
                         sigmas=sigma[0:args.N_measure_sigma].cpu()
                     ),
-                    os.path.join(savedir, "losses", "sigmas.{}.pt".format(ep + 1))
+                    os.path.join(savedir, "losses", "sigmas.pt")
                 )
                 """
 
