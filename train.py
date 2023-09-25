@@ -67,7 +67,7 @@ class Arguments:
     epsilon: float = 2e-5           # step size to use during generation (SGLD)
     sigma_1: float = 1.0            # variance of largest noise distribution
     sigma_L: float = 0.01           # variance of smallest noise distribution
-    T: int = 100                    # how many SGLD steps to do per noise schedule
+    T: int = 100                    # how many corrector steps per predictor step
     L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
     lambda_fn: str = 's^2'          # what weighting function do we use?
 
@@ -77,7 +77,7 @@ class Arguments:
     factorization: Union[str,None] = None       # factorization, a specific kwarg in FNOBlocks
     num_freqs_input: int = 0        # not used currently
 
-    npad: int = 8
+    npad: int = 8                   # how much do we pad the original input?
 
     scale_factor: float = 1.0       # if < 1, downsize dataset by this amount.
     d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
@@ -95,7 +95,7 @@ class Arguments:
     lr: float = 1e-3                # learning rate for training
     Ntest: int = 1024               # number of samples to compute for validation metrics
     num_workers: int = 2            # number of cpu workers
-    N_measure_sigma: int = 100       # measure SM loss for every n sigma values
+    log_sigmas: bool = True         # log losses per value of sigma
     ema_rate: Union[float, None] = None # moving average coefficient for EMA
 
 def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
@@ -125,19 +125,7 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
         resolution=args.resolution,
         transform=transform
     )
-    rnd_state = np.random.RandomState(seed=0)
-    dataset_idcs = np.arange(0, len(dataset))
-    rnd_state.shuffle(dataset_idcs)
-    train_dataset = Subset(
-        dataset, dataset_idcs[0 : int(len(dataset_idcs) * (1 - args.val_size))]
-    )
-    valid_dataset = Subset(
-        dataset, dataset_idcs[int(len(dataset_idcs) * (1 - args.val_size)) : :]
-    )
-    logger.info(
-        "Len of train / valid: {} / {}".format(len(train_dataset), len(valid_dataset))
-    )
-    return train_dataset, valid_dataset
+    return dataset
 
 
 @torch.no_grad()
@@ -193,7 +181,7 @@ def score_matching_loss(fno, u, sigma, noise_sampler,
     # shape (bs,)
     loss = (terms_flattened**2).mean(dim=(1,2))
     # compute mean over minibatch
-    weighted_loss = (weights*loss).mean()
+    weighted_loss = (weights*loss)
 
     return weighted_loss
 
@@ -205,17 +193,17 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if not os.path.exists(savedir):
         os.makedirs(savedir)
 
-    train_dataset, valid_dataset = get_dataset(args)
+    train_dataset =  get_dataset(args)
 
     # Initialise the model
     logger.debug("res: {}, dataset.x_train.shape = {}".format(
-        args.resolution, train_dataset.dataset.x_train.shape
+        args.resolution, train_dataset.x_train.shape
     ))
     fno = UNO_Diffusion(
         in_channels=2,
         out_channels=2,
         base_width=args.d_co_domain,
-        spatial_dim=train_dataset.dataset.res,
+        spatial_dim=train_dataset.res,
         npad=args.npad,
         rank=args.rank,
         fmult=args.fmult,
@@ -260,16 +248,16 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if args.white_noise:
         logger.warning("Noise distribution: independent Gaussian noise")
         noise_sampler = IndependentGaussian(
-            train_dataset.dataset.res, 
-            train_dataset.dataset.res, 
+            train_dataset.res, 
+            train_dataset.res, 
             sigma=1.0, 
             device=device
         )
     else:
         logger.debug("Noise distribution: RBF noise")
         noise_sampler = GaussianRF_RBF(
-            train_dataset.dataset.res, 
-            train_dataset.dataset.res, 
+            train_dataset.res, 
+            train_dataset.res, 
             scale=args.rbf_scale, 
             eps=args.rbf_eps, 
             device=device
@@ -300,7 +288,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         ema_helper,
         start_epoch,
         val_metrics,
-        (train_dataset, valid_dataset),
+        train_dataset,
         (noise_sampler, sigma),
     )
 
@@ -322,7 +310,7 @@ def generate_loss_distribution(loader, fno, sigmas, noise_sampler, lambda_fn):
         try:
             u = next(_iter).to(device)
             sampled_sigma = sigmas[j].expand(u.size(0), 1, 1, 1).to(device)
-            loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn)
+            loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn).mean()
             buf.append(loss.item())
             print(buf[-1])
         except StopIteration:
@@ -340,7 +328,7 @@ def run(args: Arguments, savedir: str):
         ema_helper,
         start_epoch,
         val_metrics,
-        (train_dataset, valid_dataset),
+        train_dataset,
         (noise_sampler, sigma),
     ) = init_model(args, savedir)
 
@@ -349,12 +337,6 @@ def run(args: Arguments, savedir: str):
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-    )
-    valid_loader = DataLoader(
-        valid_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -389,8 +371,8 @@ def run(args: Arguments, savedir: str):
 
     # Compute the circular variance and skew on the training set
     # and save this to the experiment folder.
-    var_train = circular_var(train_dataset.dataset.x_train).numpy()
-    skew_train = circular_skew(train_dataset.dataset.x_train).numpy()
+    var_train = circular_var(train_dataset.x_train).numpy()
+    skew_train = circular_skew(train_dataset.x_train).numpy()
     with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
         pickle.dump(dict(var=var_train, skew=skew_train), f)
 
@@ -426,28 +408,40 @@ def run(args: Arguments, savedir: str):
 
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
+        eval_model = (ep + 1) % args.record_interval == 0
 
-        fno.train()
         pbar = tqdm(
             total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
         )
-        buf = dict()
+        buf = dict()                    # map strings to metrics
+        sigma_to_loss = dict()          # map sigma value to loss
+        fno.train()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
 
             u = u.to(device)
-
             # Sample a noise scale per element in the minibatch
             idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
             sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            loss = score_matching_loss(
+            losses = score_matching_loss(
                 fno, 
                 u, 
                 sampled_sigma, 
                 noise_sampler,
                 lambda_fn
             )
+            loss = losses.mean()
+            if eval_model:
+                # If this is an evaluation epoch, log sigma -> loss for the entire
+                # data loader.
+                with torch.no_grad():
+                    for ss, vv in zip(sampled_sigma.cpu().flatten(), losses.cpu()):
+                        ss = ss.item()
+                        vv = vv.item()
+                        if ss not in sigma_to_loss:
+                            sigma_to_loss[ss] = []
+                        sigma_to_loss[ss].append(vv)
             """
             u, fn_outs = sample(
                 fno,
@@ -481,6 +475,7 @@ def run(args: Arguments, savedir: str):
             # if iter_ == 10: # TODO add debug flag
             #    break
 
+            # TODO: refactor
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
                     idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
@@ -508,7 +503,7 @@ def run(args: Arguments, savedir: str):
                         figsize=(8, 8),
                     )
 
-                    x_train = train_dataset.dataset.x_train
+                    x_train = train_dataset.x_train
                     mean_samples = []
                     for _ in range(16):
                         perm = torch.randperm(len(x_train))[0:2048]
@@ -526,6 +521,7 @@ def run(args: Arguments, savedir: str):
 
         fno.eval()
         buf_valid = dict(loss_valid=[])
+        """
         for iter_, u in enumerate(valid_loader):
             u = u.to(device)
             # Sample a noise scale per element in the minibatch
@@ -534,11 +530,11 @@ def run(args: Arguments, savedir: str):
             loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn)
             # Update total statistics
             buf_valid["loss_valid"].append(loss.item())
-
+        """
         # scheduler.step()
 
         metric_vals = {} # store validation metrics
-        if (ep + 1) % args.record_interval == 0:
+        if eval_model:
 
             with ema_helper:
                 # This context mgr automatically applies EMA
@@ -555,28 +551,6 @@ def run(args: Arguments, savedir: str):
                 skew_generated = fn_outs["skew"]
                 var_generated = fn_outs["var"]
 
-                # For N values of sigma, compute the mean score
-                # matching loss so that we can plot it as a fn
-                # of sigma.
-                """
-                loss_per_sigma = generate_loss_distribution(
-                    train_loader,
-                    fno,
-                    torch.flip(sigma, (0,))[0:args.N_measure_sigma],
-                    noise_sampler,
-                    lambda_fn=lambda x: x*0 + 1        # use unweighted loss
-                )
-                if not os.path.exists(os.path.join(savedir, "losses")):
-                    os.makedirs(os.path.join(savedir, "losses"))
-                torch.save(
-                    dict(
-                        losses=torch.FloatTensor(loss_per_sigma), 
-                        sigmas=sigma[0:args.N_measure_sigma].cpu()
-                    ),
-                    os.path.join(savedir, "losses", "sigmas.pt")
-                )
-                """
-
             # Dump this out to disk as well.
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
@@ -591,9 +565,13 @@ def run(args: Arguments, savedir: str):
                     ),
                 )
 
+            # Dump sigma_to_losses out to disk.
+            with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1))) as f:
+                pickle.dump(sigma_to_loss, f)
+
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.
-            this_train_mean = train_dataset.dataset.x_train.mean(dim=0, keepdim=True)
+            this_train_mean = train_dataset.x_train.mean(dim=0, keepdim=True)
             this_gen_mean = u.mean(dim=0, keepdim=True).detach().cpu()
 
             mean_image_l2 = torch.mean((this_train_mean - this_gen_mean) ** 2)

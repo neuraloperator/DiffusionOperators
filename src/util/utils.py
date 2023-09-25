@@ -140,24 +140,27 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         pbar = tqdm(total=L, desc="sample_pc")
     # sample x_N ~ N(0, sigma^2_{max})
     x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
+    #znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
     # need to flip order of sigmas for this algorithm
     sigma = torch.flip(sigma, (0,))
     for j in range(L-2, -1, -1):
-
-
-        import pdb; pdb.set_trace()
-        
         # 'epsilon_i' in algorihm but we use alpha_i here
         # and epsilon is the base lr.
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
-        pbar.set_description("alpha={}".format(alpha))
         # Predictor:
         # x' := x_{i+1} + (s_{i+1}**2 - s_i**2) * s(x_{i+1}, s_{i+1})
-        xtilde = x0 + (sigma[j+1]**2 - sigma[j]**2) * score(x0, sigma[j+1].view(1,1,1,1))
+        this_score = score(x0, sigma[j+1].view(1,1,1,1))
+        xtilde = x0 + (sigma[j+1]**2 - sigma[j]**2) * this_score
         # z ~ N(0,I)
         z = noise_sampler.sample(x0.size(0))
         # x := x' + sqrt(...)*z
         x0 = xtilde + torch.sqrt(sigma[j+1]**2 - sigma[j]**2) * z
+        #znorm = np.sqrt(128*128*2)
+        #gnorm = torch.sqrt(torch.sum(this_score**2, dim=(1,2,3))).mean()
+        #alpha = 2 * (0.17*znorm / gnorm)**2
+        pbar.set_description("alpha={}, x norm={}".format(
+            alpha, torch.sqrt((x0**2).sum(dim=(1,2,3))).mean().item()
+        ))
         # Corrector steps:
         for _ in range(T):
             z = noise_sampler.sample(x0.size(0))
@@ -169,8 +172,7 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
     if verbose:
         pbar.close()
         
-    return x0
-
+    return torch.clamp(x0, -1, 1)
 
 # Plotting functions
 
