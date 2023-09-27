@@ -16,13 +16,17 @@ from neuralop.layers.resample import resample
 
 class UNO_MyClass(UNO):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.final = nn.Conv2d(128, 2, 1)
+
     def forward(self, x, **kwargs):
         x = self.lifting(x)
-        print("lift:", x.shape)
+        #print("lift:", x.shape)
 
         if self.domain_padding is not None:
             x = self.domain_padding.pad(x)
-            print("pad: ", x.shape)
+            #print("pad: ", x.shape)
         output_shape = [
             int(round(i * j))
             for (i, j) in zip(x.shape[-self.n_dim :], self.end_to_end_scaling_factor)
@@ -33,30 +37,36 @@ class UNO_MyClass(UNO):
         for layer_idx in range(self.n_layers):
             if layer_idx in self.horizontal_skips_map.keys():
                 skip_val = skip_outputs[self.horizontal_skips_map[layer_idx]]
-                output_scaling_factors = [
-                    m / n for (m, n) in zip(x.shape, skip_val.shape)
-                ]
-                output_scaling_factors = output_scaling_factors[-1 * self.n_dim :]
-                t = resample(
-                    skip_val, output_scaling_factors, list(range(-self.n_dim, 0))
-                )
-                x = torch.cat([x, t], dim=1)
-                print("skip")
+                #output_scaling_factors = [
+                #    m / n for (m, n) in zip(x.shape, skip_val.shape)
+                #]
+                #output_scaling_factors = output_scaling_factors[-1 * self.n_dim :]
+                #t = resample(
+                #    skip_val, output_scaling_factors, list(range(-self.n_dim, 0))
+                #)
+                #print("    ", x.shape, ">>", skip_val.shape)
+                x = torch.cat([x, skip_val], dim=1)
 
             if layer_idx == self.n_layers - 1:
                 cur_output = output_shape
+                #print("cur_output:", cur_output)
+                
             x = self.fno_blocks[layer_idx](x, output_shape=cur_output)
-            print("{}:".format(layer_idx), x.shape)
+            #print("{}:".format(layer_idx), x.shape)
 
             if layer_idx in self.horizontal_skips_map.values():
-                skip_outputs[layer_idx] = self.horizontal_skips[str(layer_idx)](x)
+                #skip_outputs[layer_idx] = self.horizontal_skips[str(layer_idx)](x)
+                skip_outputs[layer_idx] = x
 
         if self.domain_padding is not None:
             x = self.domain_padding.unpad(x)
-            print("unpad:", x.shape)
+            #print("unpad:", x.shape)
 
-        x = self.projection(x)
-        print(x.shape)
+        #x = self.projection(x)
+        x = self.final(x)
+        #print(x.shape)
+
+
         
         return x
 
@@ -81,38 +91,22 @@ class UNO_Diffusion(nn.Module):
         # 128 -> 96 -> 64 but maybe it's faster to just downscale
         # with powers of two.
         uno_scalings = [
-            0.75,   # 0
-            0.67,   # 1
-            0.5,    # 2
-            0.5,    # 3
-
-            1.0,    # 4
+            1.0,    # 0, 128px
+            0.75,   # 1, 96px
+            0.67,   # 2, 64px
             
-            2.0,    # 5
-            2.0,    # 6
-            1.5,    # 7
-            1.33    # 8
+            0.5,    # 3, 32px
+            
+            2.0,    # 4, 64px
+            1.5,    # 5, 96px
+            1.33,   # 6, 128px
+            1.0,    # 7, 128px
         ]
         horizontal_skips_map = {
-            8: 0,
-            7: 1,
-            6: 2,
-            5: 3,
+            7: 0,
+            6: 1,
+            5: 2,
         }
-
-        """
-            (0.75, 0.75),   # e.g. (128 -> 96)
-            (0.67, 0.67),   # e.g. (96 -> 64)
-            (0.5, 0.5),   # e.g. (64 -> 32)
-            (0.5, 0.5),    # (32 -> 16)
-            
-            (1.0, 1.0),   # e.g. (16 -> 16)
-            
-            (2.0, 2.0),   # e.g. (16 -> 32)
-            (2.0, 2.0),   # e.g. (32 -> 64)
-            (1.5, 1.5),   # e.g. (64 -> 96)
-            (1.33, 1.33),   # e.g. (96 -> 128),
-        """ 
         
         # The number of fourier modes is just the resolution at that
         # layer multiplied by `fmult`.
@@ -121,8 +115,10 @@ class UNO_Diffusion(nn.Module):
         for scale_factor in uno_scalings:
             _curr_res[0] = _curr_res[0]*scale_factor
             _curr_res[1] = _curr_res[1]*scale_factor
+            # n modes is basically res//2 (well, +1 as well)
+            # so do (res//2) * fmult
             n_modes.append(
-                ( int(fmult*_curr_res[0])//2, int(fmult*_curr_res[1])//2 )
+                ( int(fmult*(_curr_res[0]/2)), int(fmult*(_curr_res[1]/2)) )
             )
 
         logger.debug("fmult={}, n_modes={}".format(
@@ -131,17 +127,15 @@ class UNO_Diffusion(nn.Module):
 
 
         pad_factor = (float(npad)/2) / sdim
-        self.uno = UNO(
+        self.uno = UNO_MyClass(
             in_channels=in_channels+2,  # +2 because of grid we pass
             out_channels=out_channels,
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
             uno_out_channels=[
-                bw*1,
+                bw*1, 
                 bw*2,
                 bw*4,
-                bw*4,
-                #
                 bw*4,
                 #
                 bw*4,
