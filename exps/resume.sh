@@ -10,18 +10,28 @@ METHOD=$1
 EXP_GROUP=$2
 TARGET_EXP=$3
 
-if [ $METHOD == "gan" ]; then
+USAGE_STR="Usage: bash resume.sh <method> <exp name> <exp to resume>"
+
+if [[ $METHOD == "gan" ]]; then
   resume_file="resume_gano.py"
-elif [ $METHOD == "sbgm" ]; then
+elif [[ $METHOD == "sbgm" ]]; then
   resume_file="resume.py"
 else
   echo "Unknown method: choose either 'sbgm' or 'gan'"
+  echo $USAGE_STR
   exit 1
 fi
 echo "resume file: " ${resume_file}
 
 if [ -z $EXP_GROUP ]; then
   echo "Must specify an experiment group name!"
+  echo $USAGE_STR
+  exit 1
+fi
+
+if [ -z $TARGET_EXP ]; then
+  echo "Must specify the target exp!"
+  echo $USAGE_STR
   exit 1
 fi
 
@@ -63,7 +73,7 @@ else
 fi
 echo "Current working directory: " `pwd`
 
-echo "Executing: python resume.py ${SAVEDIR}/${TARGET_EXP}"
+echo "Executing: python ${resume_file} ${SAVEDIR}/${TARGET_EXP}"
 
 python ${resume_file} $SAVEDIR/$TARGET_EXP
 

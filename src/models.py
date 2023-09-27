@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from neuralop.models import UNO
 
@@ -8,6 +9,56 @@ from .util.setup_logger import get_logger
 logger = get_logger(__name__)
 
 from .util.utils import count_params
+
+from typing import Union, Tuple
+
+from neuralop.layers.resample import resample
+
+class UNO_MyClass(UNO):
+
+    def forward(self, x, **kwargs):
+        x = self.lifting(x)
+        print("lift:", x.shape)
+
+        if self.domain_padding is not None:
+            x = self.domain_padding.pad(x)
+            print("pad: ", x.shape)
+        output_shape = [
+            int(round(i * j))
+            for (i, j) in zip(x.shape[-self.n_dim :], self.end_to_end_scaling_factor)
+        ]
+
+        skip_outputs = {}
+        cur_output = None
+        for layer_idx in range(self.n_layers):
+            if layer_idx in self.horizontal_skips_map.keys():
+                skip_val = skip_outputs[self.horizontal_skips_map[layer_idx]]
+                output_scaling_factors = [
+                    m / n for (m, n) in zip(x.shape, skip_val.shape)
+                ]
+                output_scaling_factors = output_scaling_factors[-1 * self.n_dim :]
+                t = resample(
+                    skip_val, output_scaling_factors, list(range(-self.n_dim, 0))
+                )
+                x = torch.cat([x, t], dim=1)
+                print("skip")
+
+            if layer_idx == self.n_layers - 1:
+                cur_output = output_shape
+            x = self.fno_blocks[layer_idx](x, output_shape=cur_output)
+            print("{}:".format(layer_idx), x.shape)
+
+            if layer_idx in self.horizontal_skips_map.values():
+                skip_outputs[layer_idx] = self.horizontal_skips[str(layer_idx)](x)
+
+        if self.domain_padding is not None:
+            x = self.domain_padding.unpad(x)
+            print("unpad:", x.shape)
+
+        x = self.projection(x)
+        print(x.shape)
+        
+        return x
 
 class UNO_Diffusion(nn.Module):
     def __init__(self,
@@ -18,6 +69,7 @@ class UNO_Diffusion(nn.Module):
                  npad: int, 
                  fmult: float,
                  rank: float = 1.0,
+                 norm: Union[str, None] = None,
                  factorization: str = None,):
         super().__init__()
         
@@ -29,41 +81,64 @@ class UNO_Diffusion(nn.Module):
         # 128 -> 96 -> 64 but maybe it's faster to just downscale
         # with powers of two.
         uno_scalings = [
-            (0.5, 0.5),   # e.g. (128 -> 64)
+            0.75,   # 0
+            0.67,   # 1
+            0.5,    # 2
+            0.5,    # 3
+
+            1.0,    # 4
+            
+            2.0,    # 5
+            2.0,    # 6
+            1.5,    # 7
+            1.33    # 8
+        ]
+        horizontal_skips_map = {
+            8: 0,
+            7: 1,
+            6: 2,
+            5: 3,
+        }
+
+        """
+            (0.75, 0.75),   # e.g. (128 -> 96)
+            (0.67, 0.67),   # e.g. (96 -> 64)
             (0.5, 0.5),   # e.g. (64 -> 32)
-            (0.5, 0.5),   # e.g. (32 -> 16)
-            (0.5, 0.5),   # e.g. (16 -> 8) 
-            (1.0, 1.0),   # e.g. (8 -> 8)
-            (2.0, 2.0),   # e.g. (8 -> 16)
+            (0.5, 0.5),    # (32 -> 16)
+            
+            (1.0, 1.0),   # e.g. (16 -> 16)
+            
             (2.0, 2.0),   # e.g. (16 -> 32)
             (2.0, 2.0),   # e.g. (32 -> 64)
-            (2.0, 2.0),   # e.g. (64 -> 128),
-        ]
+            (1.5, 1.5),   # e.g. (64 -> 96)
+            (1.33, 1.33),   # e.g. (96 -> 128),
+        """ 
         
         # The number of fourier modes is just the resolution at that
         # layer multiplied by `fmult`.
         n_modes = []
         _curr_res = [sdim, sdim]
-        for tp in uno_scalings:
-            _curr_res[0] = _curr_res[0]*tp[0]
-            _curr_res[1] = _curr_res[1]*tp[1]
+        for scale_factor in uno_scalings:
+            _curr_res[0] = _curr_res[0]*scale_factor
+            _curr_res[1] = _curr_res[1]*scale_factor
             n_modes.append(
-                ( int(fmult*_curr_res[0]), int(fmult*_curr_res[1]) )
+                ( int(fmult*_curr_res[0])//2, int(fmult*_curr_res[1])//2 )
             )
 
         logger.debug("fmult={}, n_modes={}".format(
             fmult, n_modes
         ))
 
+
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO(
-            in_channels=in_channels,
+            in_channels=in_channels+2,  # +2 because of grid we pass
             out_channels=out_channels,
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
             uno_out_channels=[
+                bw*1,
                 bw*2,
-                bw*4,
                 bw*4,
                 bw*4,
                 #
@@ -71,11 +146,12 @@ class UNO_Diffusion(nn.Module):
                 #
                 bw*4,
                 bw*4,
-                bw*4,
                 bw*2,
+                bw*1,
             ],
-            norm="instance_norm",
+            norm=norm,
             uno_n_modes=n_modes,
+            horizontal_skips_map=horizontal_skips_map,
             uno_scalings=uno_scalings,
             factorization=factorization,
             rank=rank,
@@ -83,11 +159,21 @@ class UNO_Diffusion(nn.Module):
             domain_padding=pad_factor,
         )
         print(self.uno)
+
+    def get_grid(self, shape: Tuple[int]):
+        batchsize, size_x, size_y = shape[0], shape[1], shape[2]
+        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
+        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+        return torch.cat((gridx, gridy), dim=-1)
         
     def forward(self, x: torch.FloatTensor, sigmas: torch.FloatTensor):
         """As per the paper 'Improved techniques for training SBGMs',
           define s(x; sigma_t) = f(x) / sigma_t.
-        """        
+        """
+        grid = self.get_grid(x.shape).to(x.device)
+        x = torch.cat((x, grid), dim=-1)
         x = x.swapaxes(-1,-2).swapaxes(-2,-3)
         result = self.uno(x) / sigmas
         return result.swapaxes(1,2).swapaxes(2,3)

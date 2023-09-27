@@ -38,6 +38,44 @@ class DotDict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
+def auto_suggest_sigma1(X: torch.FloatTensor):
+    """
+    From "Improved techniques for training SBGMs":
+      Choose sigma_1 to be as large as the max Euclidean distance
+      between all pairs of training data points.
+
+    Doing all pairs would be too costly, so take the dataset
+      and compare it to a random permutation of it.
+    """
+    perm = torch.randperm(len(X))
+    X2 = X[perm]
+    return torch.sqrt( ((X - X2)**2).sum(dim=(1,2,3)) ).max().item()
+
+def auto_suggest_epsilon(sigmas, T: float):
+    """
+    From "Improved techniques for training SBGMs":
+      Choose T as large as allowed by a computing budget and then
+      select an epsilon that makes Eqn. (4) maximally close to 1.
+    """
+    i = 1
+    sL = sigmas[-1]
+
+    epsilon = torch.FloatTensor(np.logspace(1, -10, 1000))
+    
+    one_minus_ = 1 - (epsilon / sL**2)
+    diff_one_minus_sq_ = sL**2 - (sL**2 * (one_minus_**2))
+    gamma = sigmas[i-1] / sigmas[i]
+    
+    term1 = one_minus_**(2*T)
+    term2 = gamma**2 - ( (2*epsilon) / diff_one_minus_sq_ )
+    term3 = (2*epsilon) / diff_one_minus_sq_
+    
+    ratio = term1*term2 + term3
+
+    argmin = torch.argmin( (ratio - 1.)**2 ).item()
+
+    return epsilon[argmin]
+
 def to_phase(samples: torch.Tensor):
     assert samples.size(-1) == 2, "Last dim should be 2d"
     phase = torch.atan2(samples[...,1], samples[...,0])
@@ -140,7 +178,7 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         pbar = tqdm(total=L, desc="sample_pc")
     # sample x_N ~ N(0, sigma^2_{max})
     x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
-    #znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
+    znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
     # need to flip order of sigmas for this algorithm
     sigma = torch.flip(sigma, (0,))
     for j in range(L-2, -1, -1):

@@ -22,6 +22,8 @@ from src.util.setup_logger import get_logger
 from src.util.utils import (DotDict, count_params, avg_spectrum, circular_skew, circular_var,
                             plot_matrix, plot_noise, plot_samples,
                             plot_samples_grid, sample_trace, sigma_sequence,
+                            auto_suggest_sigma1,
+                            auto_suggest_epsilon,
                             to_phase, ValidationMetric)
 
 logger = get_logger(__name__)
@@ -65,7 +67,7 @@ class Arguments:
     resolution: Union[int, None] = None # dataset resolution
 
     epsilon: float = 2e-5           # step size to use during generation (SGLD)
-    sigma_1: float = 1.0            # variance of largest noise distribution
+    sigma_1: Union[float, None] = 1.0            # variance of largest noise distribution
     sigma_L: float = 0.01           # variance of smallest noise distribution
     T: int = 100                    # how many corrector steps per predictor step
     L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
@@ -161,6 +163,25 @@ def sample(
     # assert len(buf) == n_examples
     return buf, fn_outputs
 
+def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
+    """
+    """
+
+    bsize = u.size(0)
+    # Sample a noise scale per element in the minibatch
+    this_sigmas = sigma
+    # noise = sqrt(sigma_i) * (L * epsilon)
+    # loss = || noise + sigma_i * F(u+noise) ||^2
+    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
+    term1 = this_sigmas * fno(u+noise, this_sigmas)
+    term2 = noise
+
+    res_sq = u.size(1) * u.size(2)
+    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
+
+    loss = (terms_flattened**2).mean()
+
+    return loss
 
 def score_matching_loss(fno, u, sigma, noise_sampler, 
                         lambda_fn):
@@ -193,7 +214,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if not os.path.exists(savedir):
         os.makedirs(savedir)
 
-    train_dataset =  get_dataset(args)
+    train_dataset = get_dataset(args)
 
     # Initialise the model
     logger.debug("res: {}, dataset.x_train.shape = {}".format(
@@ -217,6 +238,10 @@ def init_model(args, savedir, checkpoint="model.pt"):
     if args.ema_rate is not None:
         ema_helper = EMAHelper(mu=args.ema_rate)
         ema_helper.register(fno)
+
+    if args.sigma_1 is None:
+        args.sigma_1 = float(int(auto_suggest_sigma1(train_dataset.X)))
+        logger.debug("sigma_1 is None, auto-suggested value is: {}".format(args.sigma_1))
 
     # Load checkpoint here if it exists.
     start_epoch = 0
@@ -270,11 +295,13 @@ def init_model(args, savedir, checkpoint="model.pt"):
         )
 
     if args.schedule == "geometric":
-        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
+        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L)
     elif args.schedule == "linear":
-        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L).to(device)
+        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L)
     else:
         raise ValueError("Unknown schedule: {}".format(args.schedule))
+    logger.info("Suggested epsilon: {}".format(auto_suggest_epsilon(sigma, args.T)))
+    sigma = sigma.to(device)
 
     logger.info(
         "sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
@@ -291,34 +318,6 @@ def init_model(args, savedir, checkpoint="model.pt"):
         train_dataset,
         (noise_sampler, sigma),
     )
-
-@torch.no_grad()
-def generate_loss_distribution(loader, fno, sigmas, noise_sampler, lambda_fn):
-    """Evaluate the loss for each possible value of sigma.
-      Useful to plot for diagnostics.
-
-    Args:
-        loader (_type_): _description_
-        fno (_type_): _description_
-        sigmas (_type_): _description_
-        noise_sampler (_type_): _description_
-    """
-    buf = []
-    # Construct noise distribution for plotting.
-    _iter = iter(loader)
-    for j in range(len(sigmas)):
-        try:
-            u = next(_iter).to(device)
-            sampled_sigma = sigmas[j].expand(u.size(0), 1, 1, 1).to(device)
-            loss = score_matching_loss(fno, u, sampled_sigma, noise_sampler, lambda_fn).mean()
-            buf.append(loss.item())
-            print(buf[-1])
-        except StopIteration:
-            _iter = iter(loader)
-        finally:
-            pass
-    return buf
-
 
 def run(args: Arguments, savedir: str):
 
@@ -424,7 +423,7 @@ def run(args: Arguments, savedir: str):
             idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
             sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            losses = score_matching_loss(
+            losses = score_matching_loss_OLD(
                 fno, 
                 u, 
                 sampled_sigma, 
@@ -566,7 +565,7 @@ def run(args: Arguments, savedir: str):
                 )
 
             # Dump sigma_to_losses out to disk.
-            with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1))) as f:
+            with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
                 pickle.dump(sigma_to_loss, f)
 
             # Nikola's suggestion: print the mean sample for training
