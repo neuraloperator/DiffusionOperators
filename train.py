@@ -54,51 +54,45 @@ def parse_args():
 @dataclass
 class Arguments:
 
-    batch_size: int = 16            # training batch size
-    val_batch_size: int = 512       # validation batch size
-    epochs: int = 100               #
-    val_size: float = 0.1           # size of validation set (e.g. 0.1 = 10%)
-    record_interval: int = 100      # eval valid metrics every this many epochs
-    white_noise: bool = False       # use white noise instead of RBF
-    augment: bool = False           # perform light data augmentation
+    batch_size: int = 16                        # training batch size
+    val_batch_size: int = 512                   # validation batch size
+    epochs: int = 100                           # train for how many epochs
+    val_size: float = 0.1                       # NOT USED
+    record_interval: int = 100                  # eval valid metrics every this many epochs
+    white_noise: bool = False                   # use white noise instead of RBF
+    augment: bool = False                       # perform light data augmentation
 
-    schedule: str = None            # either 'geometric' or 'linear'
+    schedule: str = None                        # either 'geometric' or 'linear'
 
-    resolution: Union[int, None] = None # dataset resolution
+    resolution: Union[int, None] = None         # dataset resolution
 
-    epsilon: float = 2e-5           # step size to use during generation (SGLD)
-    sigma_1: Union[float, None] = 1.0            # variance of largest noise distribution
-    sigma_L: float = 0.01           # variance of smallest noise distribution
-    T: int = 100                    # how many corrector steps per predictor step
-    L: int = 10                     # how many noise schedules between sigma_1 and sigma_L
-    lambda_fn: str = 's^2'          # what weighting function do we use?
+    epsilon: float = 2e-5                       # step size to use during generation (SGLD)
+    sigma_1: Union[float, None] = 1.0           # variance of largest noise distribution
+    sigma_L: float = 0.01                       # variance of smallest noise distribution
+    T: int = 100                                # how many corrector steps per predictor step
+    L: int = 10                                 # how many noise schedules, len(sigmas)
+    lambda_fn: str = 's^2'                      # what weighting function do we use?
 
-    rbf_scale: float = 1.0          # scale parameter of the RBF kernel (determines smoothness)
-    rbf_eps: float = 0.01           # stability term for cholesky decomposition of covariance C
+    rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
+    rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
 
-    factorization: Union[str,None] = None       # factorization, a specific kwarg in FNOBlocks
-    num_freqs_input: int = 0        # not used currently
+    factorization: Union[str,None] = None       # factorization, type (see FNOBlocks)
+    npad: int = 8                               # how much do we pad the original input?
+    d_co_domain: int = 32                       # base width for UNO
+    # NOT USED
+    mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4])
+    fmult: float = 0.25                         # what proportion of Fourier modes to retain
+    rank: float = 1.0                           # factorisation coefficient
+    groups: int = 0                             # NOT USED
 
-    npad: int = 8                   # how much do we pad the original input?
+    # do we use signal-noise ratio to determine step size during sampling?
+    use_snr: bool = False                       
 
-    scale_factor: float = 1.0       # if < 1, downsize dataset by this amount.
-    d_co_domain: int = 32           # lift from 2 dims (x,y) to this many dimensions inside UNO
-    mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4]) # ngf
-
-    # multiplier to reduce the number of Fourier modes.
-    # For instance, 1.0 means the maximal possible number will be used,
-    # and 0.5 means only half will be used. Larger numbers correspond
-    # to more parameters / memory.
-    fmult: float = 0.25
-    
-    rank: float = 1.0               # factorisation coefficient
-    groups: int = 0                 # number of groups for group norm
-
-    lr: float = 1e-3                # learning rate for training
-    Ntest: int = 1024               # number of samples to compute for validation metrics
-    num_workers: int = 2            # number of cpu workers
-    log_sigmas: bool = True         # log losses per value of sigma
-    ema_rate: Union[float, None] = None # moving average coefficient for EMA
+    lr: float = 1e-3                            # learning rate for training
+    Ntest: int = 1024                           # number of samples to compute for validation metrics
+    num_workers: int = 2                        # number of cpu workers
+    log_sigmas: bool = True                     # log losses per value of sigma
+    ema_rate: Union[float, None] = None         # moving average coefficient for EMA
 
 def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
     """Return training and validation split of dataset
@@ -431,6 +425,8 @@ def run(args: Arguments, savedir: str):
                 lambda_fn
             )
             loss = losses.mean()
+
+            """
             if eval_model:
                 # If this is an evaluation epoch, log sigma -> loss for the entire
                 # data loader.
@@ -441,6 +437,7 @@ def run(args: Arguments, savedir: str):
                         if ss not in sigma_to_loss:
                             sigma_to_loss[ss] = []
                         sigma_to_loss[ss].append(vv)
+            """
             """
             u, fn_outs = sample(
                 fno,
@@ -457,6 +454,13 @@ def run(args: Arguments, savedir: str):
             loss.backward()
             optimizer.step()
             pbar.update(1)
+
+            if iter_ == 0:
+                with torch.cuda.device(device):
+                    mem_info = torch.cuda.mem_get_info()
+                    free_mem = mem_info[0] / 1024. / 1024.
+                    total_mem = mem_info[1] / 1024. / 1024.
+                    used_mem = total_mem - free_mem
 
             if ema_helper is not None:
                 ema_helper.update()
@@ -565,8 +569,8 @@ def run(args: Arguments, savedir: str):
                 )
 
             # Dump sigma_to_losses out to disk.
-            with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
-                pickle.dump(sigma_to_loss, f)
+            #with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
+            #    pickle.dump(sigma_to_loss, f)
 
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.
@@ -637,6 +641,8 @@ def run(args: Arguments, savedir: str):
         buf = {k: np.mean(v) for k, v in buf.items()}
         buf.update({k: np.mean(v) for k, v in buf_valid.items()})
         buf["epoch"] = ep
+        buf["gpu_used_mem"] = used_mem
+        buf["gpu_total_mem"] = total_mem
         buf["lr"] = optimizer.state_dict()["param_groups"][0]["lr"]
         buf["time"] = default_timer() - t1
         # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr

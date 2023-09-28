@@ -18,7 +18,7 @@ class UNO_MyClass(UNO):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.final = nn.Conv2d(128, 2, 1)
+        self.final = nn.Conv2d(self.uno_out_channels[-1], self.out_channels, 1)
 
     def forward(self, x, **kwargs):
         x = self.lifting(x)
