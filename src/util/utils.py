@@ -175,36 +175,25 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
 def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
     L = sigma.size(0)
     if verbose:
-        pbar = tqdm(total=L, desc="sample_pc")
-    # sample x_N ~ N(0, sigma^2_{max})
-    x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
-    znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
-    # need to flip order of sigmas for this algorithm
-    sigma = torch.flip(sigma, (0,))
-    for j in range(L-2, -1, -1):
-        # 'epsilon_i' in algorihm but we use alpha_i here
-        # and epsilon is the base lr.
+        pbar = tqdm(total=L, desc="sample_trace")
+    for j in range(L):
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
-        # Predictor:
-        # x' := x_{i+1} + (s_{i+1}**2 - s_i**2) * s(x_{i+1}, s_{i+1})
-        this_score = score(x0, sigma[j+1].view(1,1,1,1))
-        xtilde = x0 + (sigma[j+1]**2 - sigma[j]**2) * this_score
-        # z ~ N(0,I)
-        z = noise_sampler.sample(x0.size(0))
-        # x := x' + sqrt(...)*z
-        x0 = xtilde + torch.sqrt(sigma[j+1]**2 - sigma[j]**2) * z
-        #znorm = np.sqrt(128*128*2)
-        #gnorm = torch.sqrt(torch.sum(this_score**2, dim=(1,2,3))).mean()
-        #alpha = 2 * (0.17*znorm / gnorm)**2
+        for t in range(T):
+            this_score = score(x0, sigma[j].view(1,1,1,1))
+            this_z = noise_sampler.sample(x0.size(0)) # z ~ N(0,C)
+            if j == L - 1 and t == T - 1:
+                # denoising step
+                x0 = x0 + sigma[-1]**2 * this_score
+            else:
+                # normally it is x + g + sqrt(alpha)*z but because
+                # we sample z ~ N(0,C) using cholesky, we have to
+                # add an additional sqrt in -> sqrt(sqrt(alpha))*z
+                x0 = x0 + alpha*this_score + torch.sqrt(torch.sqrt(2*alpha))*this_z
+        if torch.isnan(x0).any().item():
+            raise ValueError("NaNs generated, you may have to decrease epsilon here")
         pbar.set_description("alpha={}, x norm={}".format(
             alpha, torch.sqrt((x0**2).sum(dim=(1,2,3))).mean().item()
         ))
-        # Corrector steps:
-        for _ in range(T):
-            z = noise_sampler.sample(x0.size(0))
-            x0 = x0 + alpha*score(x0, sigma[j].view(1,1,1,1)) + torch.sqrt(2*alpha)*z
-        if torch.isnan(x0).any().item():
-            raise ValueError("nans generated, you may have to decrease epsilon here")
         if verbose:
             pbar.update(1)
     if verbose:
