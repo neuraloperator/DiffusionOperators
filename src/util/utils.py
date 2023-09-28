@@ -109,10 +109,9 @@ def circular_skew(x: torch.Tensor):
 
     return R2 * torch.sin(T2 - 2*T1) / (1 - R1)**(3/2)
 
-def sigma_sequence(sigma_1, sigma_L, L):
-    a = (sigma_L/sigma_1)**(1.0/(L-1))
-
-    return torch.tensor([sigma_1*(a**l) for l in range(L)])
+def sigma_sequence(sigma_max, sigma_min, L, p=7):
+    return [ ( sigma_max**(1/p) + t*(sigma_min**(1/p) - sigma_max**(1/p)) )**p \
+        for t in np.linspace(0, 1, L) ]
 
 def avg_spectrum(u):
     s = u.size(1)
@@ -178,6 +177,10 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
         pbar = tqdm(total=L, desc="sample_pc")
     # sample x_N ~ N(0, sigma^2_{max})
     x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
+    # sigmas need to be defined here
+
+
+    
     znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
     # need to flip order of sigmas for this algorithm
     sigma = torch.flip(sigma, (0,))

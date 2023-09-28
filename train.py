@@ -28,6 +28,8 @@ from src.util.utils import (DotDict, count_params, avg_spectrum, circular_skew, 
 
 logger = get_logger(__name__)
 
+from functools import partial
+
 import numpy as np
 from tqdm import tqdm
 
@@ -61,8 +63,6 @@ class Arguments:
     record_interval: int = 100                  # eval valid metrics every this many epochs
     white_noise: bool = False                   # use white noise instead of RBF
     augment: bool = False                       # perform light data augmentation
-
-    schedule: str = None                        # either 'geometric' or 'linear'
 
     resolution: Union[int, None] = None         # dataset resolution
 
@@ -126,7 +126,7 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
 
 @torch.no_grad()
 def sample(
-    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+    G, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
 ):
     buf = []
     if fns is not None:
@@ -137,7 +137,7 @@ def sample(
     for _ in range(n_batches):
         u = noise_sampler.sample(bs)
         u = sample_trace(
-            fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
+            G, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
         if fns is not None:
             for fn_name, fn_apply in fns.items():
@@ -157,48 +157,32 @@ def sample(
     # assert len(buf) == n_examples
     return buf, fn_outputs
 
-def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
-    """
-    """
+def score_matching_loss_edm(F, u, sigma, noise_sampler):
 
+    sigma = sigma.view(-1, 1, 1, 1).to(u.device)
+    
     bsize = u.size(0)
-    # Sample a noise scale per element in the minibatch
-    this_sigmas = sigma
-    # noise = sqrt(sigma_i) * (L * epsilon)
-    # loss = || noise + sigma_i * F(u+noise) ||^2
-    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
-    term1 = this_sigmas * fno(u+noise, this_sigmas)
-    term2 = noise
-
-    res_sq = u.size(1) * u.size(2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
-
-    loss = (terms_flattened**2).mean()
-
-    return loss
-
-def score_matching_loss(fno, u, sigma, noise_sampler, 
-                        lambda_fn):
-    bsize = u.size(0)
-    # loss = \lambda(sigma) || F(u+noise; sigma) + Le/sqrt(sigma) ||^2
-    # and noise = \sqrt(sigma_i) L \epsilon, \epsilon ~ N(0,I).
     eps_L = noise_sampler.sample(bsize)         # structured noise
     noise = torch.sqrt(sigma) * eps_L           # scaled by variance
-    term1 = fno(u+noise, sigma)
-    term2 = eps_L * (1. / torch.sqrt(sigma))    # see my eqn 12 overleaf
+    
+    term1 = F(cin(sigma)*(u + noise), cnoise(sigma))
+    term2 = (1. / cout(sigma)) * ((u - cskip(sigma)) * (u + noise))
 
-    res_sq = u.size(1) * u.size(2)
+    loss = ((term1-term2)**2).mean(dim=(1,2,3))
+    
+    return loss
 
-    # shape (bs, s^2, 2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
-    # shape (bs,)
-    weights = lambda_fn(sigma).flatten()
-    # shape (bs,)
-    loss = (terms_flattened**2).mean(dim=(1,2))
-    # compute mean over minibatch
-    weighted_loss = (weights*loss)
+def cskip(sigma, sigma_data=0.5):
+    return sigma_data**2 / (sigma**2 + sigma_data**2)
 
-    return weighted_loss
+def cout(sigma, sigma_data=0.5):
+    return (sigma*sigma_data) / torch.sqrt(sigma**2 + sigma_data**2)
+
+def cin(sigma, sigma_data=0.5):
+    return 1. / torch.sqrt(sigma**2 + sigma_data**2)
+
+def cnoise(sigma):
+    return 0.25*torch.log(sigma)
 
 def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
@@ -282,26 +266,13 @@ def init_model(args, savedir, checkpoint="model.pt"):
             device=device
         )
 
+    sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L)
+
     if args.sigma_1 < args.sigma_L:
         raise ValueError(
             "sigma_1 < sigma_L, whereas sigmas should be monotonically "
             + "decreasing. You probably need to switch these two arguments around."
         )
-
-    if args.schedule == "geometric":
-        sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L)
-    elif args.schedule == "linear":
-        sigma = torch.linspace(args.sigma_1, args.sigma_L, args.L)
-    else:
-        raise ValueError("Unknown schedule: {}".format(args.schedule))
-    logger.info("Suggested epsilon: {}".format(auto_suggest_epsilon(sigma, args.T)))
-    sigma = sigma.to(device)
-
-    logger.info(
-        "sigma[0]={:.4f}, sigma[-1]={:.4f} for {} timesteps".format(
-            sigma[0], sigma[-1], args.L
-        )
-    )
 
     # TODO: this needs to be cleaned up badly
     return (
@@ -310,8 +281,16 @@ def init_model(args, savedir, checkpoint="model.pt"):
         start_epoch,
         val_metrics,
         train_dataset,
-        (noise_sampler, sigma),
+        (noise_sampler, sigma)
     )
+
+def sample_sigma(bs, P_mean=-1.2, P_std=1.2):
+    """sample ln sigma ~ N(P_mean, P_std)"""
+    return torch.exp(torch.zeros((bs, 1)).normal_(P_mean, P_std))
+
+def G(F, u, sigma):
+    sigma = sigma.view(-1, 1, 1, 1)
+    return cskip(sigma)*u + cout(sigma)*F( cin(sigma)*u, cnoise(sigma) )
 
 def run(args: Arguments, savedir: str):
 
@@ -385,20 +364,6 @@ def run(args: Arguments, savedir: str):
             metric_trackers[key].load_state_dict(val_metrics[key])
             logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
-    lambda_fns = {
-        '1/s': lambda x: 1. / x,
-        '1/s^2': lambda x: 1. / (x**2),
-        's^2': lambda x: (x**2),
-        'sqrt(s)': lambda x: torch.sqrt(x),
-        's': lambda x: x
-    }
-    if args.lambda_fn not in lambda_fns:
-        raise Exception("lambda_fn must be one of: {}".format(
-            list(lambda_fns.keys())
-        ))
-    else:
-        lambda_fn = lambda_fns[args.lambda_fn]
-
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
         eval_model = (ep + 1) % args.record_interval == 0
@@ -407,22 +372,17 @@ def run(args: Arguments, savedir: str):
             total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()                    # map strings to metrics
-        sigma_to_loss = dict()          # map sigma value to loss
+        #sigma_to_loss = dict()          # map sigma value to loss
         fno.train()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
-
             u = u.to(device)
-            # Sample a noise scale per element in the minibatch
-            idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
-            sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
-            # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            losses = score_matching_loss_OLD(
+            sampled_sigma = sample_sigma(u.size(0))
+            losses = score_matching_loss_edm(
                 fno, 
                 u, 
                 sampled_sigma, 
                 noise_sampler,
-                lambda_fn
             )
             loss = losses.mean()
 
@@ -479,6 +439,7 @@ def run(args: Arguments, savedir: str):
             #    break
 
             # TODO: refactor
+
             if iter_ == 0 and ep == 0:
                 with torch.no_grad():
                     idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
@@ -523,7 +484,8 @@ def run(args: Arguments, savedir: str):
         pbar.close()
 
         fno.eval()
-        buf_valid = dict(loss_valid=[])
+        #buf_valid = dict(loss_valid=[])
+        buf_valid = {}
         """
         for iter_, u in enumerate(valid_loader):
             u = u.to(device)
@@ -542,9 +504,8 @@ def run(args: Arguments, savedir: str):
             with ema_helper:
                 # This context mgr automatically applies EMA
                 u, fn_outs = sample(
-                    fno,
+                    partial(G, F=fno),
                     noise_sampler,
-                    sigma,
                     bs=args.val_batch_size,
                     n_examples=args.Ntest,
                     T=args.T,
