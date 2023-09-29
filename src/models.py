@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from neuralop.models import UNO
+from neuralop.layers.fno_block import FNOBlocks
 
 from .util.setup_logger import get_logger
 logger = get_logger(__name__)
@@ -12,7 +13,50 @@ from .util.utils import count_params
 
 from typing import Union, Tuple
 
-from neuralop.layers.resample import resample
+from .util import run_nerf_helpers
+
+class FNOBlocks_MyClass(FNOBlocks):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.t_mlps = nn.ModuleList([
+            nn.Linear(256, self.out_channels*2) for \
+                _ in range(self.n_layers*self.n_norms)
+        ])
+    def forward(self, x, index=0, output_shape=None, t_emb=None):
+        """Just override forward, assume we are doing forward_with_postactivation"""
+        x_skip_fno = self.fno_skips[index](x)
+        x_skip_fno = self.convs[index].transform(x_skip_fno, output_shape=output_shape)
+
+        if self.mlp is not None:
+            x_skip_mlp = self.mlp_skips[index](x)
+            x_skip_mlp = self.convs[index].transform(x_skip_mlp, output_shape=output_shape)
+
+        if self.stabilizer == "tanh":
+            x = torch.tanh(x)
+
+        x_fno = self.convs(x, index, output_shape=output_shape)
+
+        if self.norm is not None:
+            x_fno = self.norm[self.n_norms * index](x_fno)
+        t_scale, t_shift = self.t_mlps[self.n_norms*index](t_emb).chunk(2, dim=1)
+        x_fno = x_fno*t_scale.unsqueeze(-1).unsqueeze(-1) + \
+            t_shift.unsqueeze(-1).unsqueeze(-1)
+
+        x = x_fno + x_skip_fno
+
+        if (self.mlp is not None) or (index < (self.n_layers - 1)):
+            x = self.non_linearity(x)
+
+        if self.mlp is not None:
+            x = self.mlp[index](x) + x_skip_mlp
+
+            if self.norm is not None:
+                x = self.norm[self.n_norms * index + 1](x)
+
+            if index < (self.n_layers - 1):
+                x = self.non_linearity(x)
+
+        return x
 
 class UNO_MyClass(UNO):
 
@@ -20,7 +64,7 @@ class UNO_MyClass(UNO):
         super().__init__(*args, **kwargs)
         self.final = nn.Conv2d(self.uno_out_channels[-1], self.out_channels, 1)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, t_emb):
         x = self.lifting(x)
         #print("lift:", x.shape)
 
@@ -51,7 +95,7 @@ class UNO_MyClass(UNO):
                 cur_output = output_shape
                 #print("cur_output:", cur_output)
                 
-            x = self.fno_blocks[layer_idx](x, output_shape=cur_output)
+            x = self.fno_blocks[layer_idx](x, t_emb=t_emb, output_shape=cur_output)
             #print("{}:".format(layer_idx), x.shape)
 
             if layer_idx in self.horizontal_skips_map.values():
@@ -65,8 +109,6 @@ class UNO_MyClass(UNO):
         #x = self.projection(x)
         x = self.final(x)
         #print(x.shape)
-
-
         
         return x
 
@@ -125,10 +167,9 @@ class UNO_Diffusion(nn.Module):
             fmult, n_modes
         ))
 
-
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO_MyClass(
-            in_channels=in_channels+2,  # +2 because of grid we pass
+            in_channels=in_channels+2,  # +2 because of grid we pass + sigma
             out_channels=out_channels,
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
@@ -143,6 +184,7 @@ class UNO_Diffusion(nn.Module):
                 bw*2,
                 bw*1,
             ],
+            operator_block=FNOBlocks_MyClass,
             norm=norm,
             uno_n_modes=n_modes,
             horizontal_skips_map=horizontal_skips_map,
@@ -153,6 +195,9 @@ class UNO_Diffusion(nn.Module):
             domain_padding=pad_factor,
         )
         print(self.uno)
+
+        embedder, outdim = run_nerf_helpers.get_embedder(num_freqs=128, input_dims=1)
+        self.embedder = embedder
 
     def get_grid(self, shape: Tuple[int]):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
@@ -166,25 +211,16 @@ class UNO_Diffusion(nn.Module):
         """As per the paper 'Improved techniques for training SBGMs',
           define s(x; sigma_t) = f(x) / sigma_t.
         """
+        t_emb = self.embedder(sigmas.view(-1, 1))
         grid = self.get_grid(x.shape).to(x.device)
         x = torch.cat((x, grid), dim=-1)
         x = x.swapaxes(-1,-2).swapaxes(-2,-3)
-        result = self.uno(x) / sigmas
+        result = self.uno(x, t_emb)
         return result.swapaxes(1,2).swapaxes(2,3)
 
 if __name__ == '__main__':
 
-    #uno = UNO_Diffusion(2, 1, 32, 128, 0.25)
-    #print(count_params(uno))
 
-    xfake = torch.randn((4, 2, 128, 128))
-
-    from neuralop.layers.padding import DomainPadding
-
-    pad = DomainPadding(
-        domain_padding=(4./128.),
-        padding_mode='symmetric',
-        output_scaling_factor=1
-    )
-
-    print(pad.pad(xfake).shape)
+    
+    xfake = torch.randn((16, 1))
+    print(embedder(xfake).shape)

@@ -164,9 +164,11 @@ def score_matching_loss_edm(F, u, sigma, noise_sampler):
     bsize = u.size(0)
     eps_L = noise_sampler.sample(bsize)         # structured noise
     noise = torch.sqrt(sigma) * eps_L           # scaled by variance
+
+    #import pdb; pdb.set_trace()
     
     term1 = F(cin(sigma)*(u + noise), cnoise(sigma))
-    term2 = (1. / cout(sigma)) * ((u - cskip(sigma)) * (u + noise))
+    term2 = (1. / cout(sigma)) * (u - (cskip(sigma)*(u + noise)))
 
     loss = ((term1-term2)**2).mean(dim=(1,2,3))
     
@@ -266,7 +268,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
             device=device
         )
 
-    sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L)
+    sigma = sigma_sequence(args.sigma_1, args.sigma_L, args.L).to(device)
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError(
@@ -286,9 +288,10 @@ def init_model(args, savedir, checkpoint="model.pt"):
 
 def sample_sigma(bs, P_mean=-1.2, P_std=1.2):
     """sample ln sigma ~ N(P_mean, P_std)"""
-    return torch.exp(torch.zeros((bs, 1)).normal_(P_mean, P_std))
+    ln_sigma = torch.zeros((bs, 1)).normal_(P_mean, P_std)
+    return torch.exp(ln_sigma)
 
-def G(F, u, sigma):
+def G(u, sigma, F=None):
     sigma = sigma.view(-1, 1, 1, 1)
     return cskip(sigma)*u + cout(sigma)*F( cin(sigma)*u, cnoise(sigma) )
 
@@ -400,7 +403,7 @@ def run(args: Arguments, savedir: str):
             """
             """
             u, fn_outs = sample(
-                fno,
+                partial(G, F=fno),
                 noise_sampler,
                 sigma,
                 bs=args.val_batch_size,

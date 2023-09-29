@@ -8,6 +8,8 @@ from typing import Tuple, List
 import os
 import matplotlib.pyplot as plt
 
+import math
+
 class ValidationMetric:
     def __init__(self):
         self.best = np.inf
@@ -110,8 +112,9 @@ def circular_skew(x: torch.Tensor):
     return R2 * torch.sin(T2 - 2*T1) / (1 - R1)**(3/2)
 
 def sigma_sequence(sigma_max, sigma_min, L, p=7):
-    return [ ( sigma_max**(1/p) + t*(sigma_min**(1/p) - sigma_max**(1/p)) )**p \
+    arr = [ ( sigma_max**(1/p) + t*(sigma_min**(1/p) - sigma_max**(1/p)) )**p \
         for t in np.linspace(0, 1, L) ]
+    return torch.FloatTensor(arr)
 
 def avg_spectrum(u):
     s = u.size(1)
@@ -171,49 +174,37 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
     return x0
 """
 
-def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
+def sample_trace(G, noise_sampler, sigma, u, epsilon=2e-5, T=100,
+                 denoise_eds=True,
+                 verbose=True):
     L = sigma.size(0)
     if verbose:
-        pbar = tqdm(total=L, desc="sample_pc")
-    # sample x_N ~ N(0, sigma^2_{max})
-    x0 = noise_sampler.sample(x0.size(0)).to(x0.device)*torch.sqrt(sigma[0])
-    # sigmas need to be defined here
+        pbar = tqdm(total=L, desc="sample_trace")
+    h = 1. / L
+    # start off with u ~ N(0, sigma_max*C)
+    u = noise_sampler.sample(u.size(0))*torch.sqrt(sigma[0])
+    for n in range(L-1):
 
+        #tn = n / L          # t_n = n / N
+        #tnp1 = (n+1) / L    # t_{n+1} = (n+1) / N
 
-    
-    znorm = np.sqrt(np.prod(list(x0.shape)[1:]))
-    # need to flip order of sigmas for this algorithm
-    sigma = torch.flip(sigma, (0,))
-    for j in range(L-2, -1, -1):
-        # 'epsilon_i' in algorihm but we use alpha_i here
-        # and epsilon is the base lr.
-        alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
-        # Predictor:
-        # x' := x_{i+1} + (s_{i+1}**2 - s_i**2) * s(x_{i+1}, s_{i+1})
-        this_score = score(x0, sigma[j+1].view(1,1,1,1))
-        xtilde = x0 + (sigma[j+1]**2 - sigma[j]**2) * this_score
-        # z ~ N(0,I)
-        z = noise_sampler.sample(x0.size(0))
-        # x := x' + sqrt(...)*z
-        x0 = xtilde + torch.sqrt(sigma[j+1]**2 - sigma[j]**2) * z
-        #znorm = np.sqrt(128*128*2)
-        #gnorm = torch.sqrt(torch.sum(this_score**2, dim=(1,2,3))).mean()
-        #alpha = 2 * (0.17*znorm / gnorm)**2
-        pbar.set_description("alpha={}, x norm={}".format(
-            alpha, torch.sqrt((x0**2).sum(dim=(1,2,3))).mean().item()
+        z = noise_sampler.sample(u.size(0))
+        u_prime = u + h*( G(u, sigma[n]) - u ) + sigma[n]*math.sqrt(2*h)*z
+        u = u - (h/2)*(u + u_prime) + \
+            (h/2)*( G(u, sigma[n]) + G(u_prime, sigma[n+1]) ) + \
+            (math.sqrt(2*h)/2)*(sigma[n] + sigma[n+1])*z
+
+        if torch.isnan(u).any().item():
+            raise ValueError("NaNs generated, you may have to decrease epsilon here")
+        pbar.set_description("u norm={}".format(
+            torch.sqrt((u**2).sum(dim=(1,2,3))).mean().item()
         ))
-        # Corrector steps:
-        for _ in range(T):
-            z = noise_sampler.sample(x0.size(0))
-            x0 = x0 + alpha*score(x0, sigma[j].view(1,1,1,1)) + torch.sqrt(2*alpha)*z
-        if torch.isnan(x0).any().item():
-            raise ValueError("nans generated, you may have to decrease epsilon here")
         if verbose:
             pbar.update(1)
     if verbose:
         pbar.close()
-        
-    return torch.clamp(x0, -1, 1)
+
+    return torch.clamp(u, -1, 1)
 
 # Plotting functions
 

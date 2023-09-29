@@ -72,7 +72,7 @@ class Embedder:
 def get_embedder(num_freqs, input_dims=3):
     
     embed_kwargs = {
-        'include_input' : True,
+        'include_input' : False,
         'input_dims' : input_dims,
         'max_freq_log2' : num_freqs-1,
         'num_freqs' : num_freqs,
