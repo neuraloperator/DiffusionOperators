@@ -172,34 +172,37 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
     return x0
 """
 
-def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=True):
+def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100, 
+                 denoise_eds=True,
+                 verbose=True):
     L = sigma.size(0)
     if verbose:
         pbar = tqdm(total=L, desc="sample_trace")
     for j in range(L):
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
         for t in range(T):
-            this_score = score(x0, sigma[j].view(1,1,1,1))
-            this_z = noise_sampler.sample(x0.size(0)) # z ~ N(0,C)
+            this_score = score(u, sigma[j].view(1,1,1,1))
+            this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
             if j == L - 1 and t == T - 1:
                 # denoising step
-                x0 = x0 + sigma[-1]**2 * this_score
+                #if denoise_eds:
+                #    # trick from jolicoeur-martineau
+                #    u = this_score
+                #else:
+                u = u + sigma[-1]**2 * this_score
             else:
-                # normally it is x + g + sqrt(alpha)*z but because
-                # we sample z ~ N(0,C) using cholesky, we have to
-                # add an additional sqrt in -> sqrt(sqrt(alpha))*z
-                x0 = x0 + alpha*this_score + torch.sqrt(torch.sqrt(2*alpha))*this_z
-        if torch.isnan(x0).any().item():
+                u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
+        if torch.isnan(u).any().item():
             raise ValueError("NaNs generated, you may have to decrease epsilon here")
-        pbar.set_description("alpha={}, x norm={}".format(
-            alpha, torch.sqrt((x0**2).sum(dim=(1,2,3))).mean().item()
+        pbar.set_description("alpha={}, u norm={}".format(
+            alpha, torch.sqrt((u**2).sum(dim=(1,2,3))).mean().item()
         ))
         if verbose:
             pbar.update(1)
     if verbose:
         pbar.close()
         
-    return torch.clamp(x0, -1, 1)
+    return torch.clamp(u, -1, 1)
 
 # Plotting functions
 
