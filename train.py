@@ -163,24 +163,27 @@ def score_matching_loss_edm(F, u, sigma, noise_sampler):
     
     bsize = u.size(0)
     eps_L = noise_sampler.sample(bsize)         # structured noise
-    noise = torch.sqrt(sigma) * eps_L           # scaled by variance
+    noise = sigma * eps_L           # scaled by variance
 
-    #import pdb; pdb.set_trace()
-    
-    term1 = F(cin(sigma)*(u + noise), cnoise(sigma))
+    # TODO: does cin(sigma)*(u+noise) have unit variance?
+    # see Eqn. (114) of EDM.
+    term1 = F( cin(sigma)*(u + noise), cnoise(sigma) )
+
+    # TODO: does the effective training target also have
+    # unit variance?
     term2 = (1. / cout(sigma)) * (u - (cskip(sigma)*(u + noise)))
 
     loss = ((term1-term2)**2).mean(dim=(1,2,3))
     
     return loss
 
-def cskip(sigma, sigma_data=0.5):
+def cskip(sigma, sigma_data=0.7):
     return sigma_data**2 / (sigma**2 + sigma_data**2)
 
-def cout(sigma, sigma_data=0.5):
+def cout(sigma, sigma_data=0.7):
     return (sigma*sigma_data) / torch.sqrt(sigma**2 + sigma_data**2)
 
-def cin(sigma, sigma_data=0.5):
+def cin(sigma, sigma_data=0.7):
     return 1. / torch.sqrt(sigma**2 + sigma_data**2)
 
 def cnoise(sigma):
@@ -509,6 +512,7 @@ def run(args: Arguments, savedir: str):
                 u, fn_outs = sample(
                     partial(G, F=fno),
                     noise_sampler,
+                    sigma,
                     bs=args.val_batch_size,
                     n_examples=args.Ntest,
                     T=args.T,
