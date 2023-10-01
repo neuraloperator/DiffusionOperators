@@ -84,6 +84,7 @@ class Arguments:
     fmult: float = 0.25                         # what proportion of Fourier modes to retain
     rank: float = 1.0                           # factorisation coefficient
     groups: int = 0                             # NOT USED
+    norm: Union[str,None] = None
 
     # do we use signal-noise ratio to determine step size during sampling?
     use_snr: bool = False                       
@@ -207,6 +208,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         in_channels=2,
         out_channels=2,
         base_width=args.d_co_domain,
+        norm=args.norm,
         spatial_dim=train_dataset.res,
         npad=args.npad,
         rank=args.rank,
@@ -378,7 +380,7 @@ def run(args: Arguments, savedir: str):
             total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()                    # map strings to metrics
-        #sigma_to_loss = dict()          # map sigma value to loss
+        sigma_to_loss = dict()          # map sigma value to loss
         fno.train()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
@@ -392,7 +394,6 @@ def run(args: Arguments, savedir: str):
             )
             loss = losses.mean()
 
-            """
             if eval_model:
                 # If this is an evaluation epoch, log sigma -> loss for the entire
                 # data loader.
@@ -403,7 +404,7 @@ def run(args: Arguments, savedir: str):
                         if ss not in sigma_to_loss:
                             sigma_to_loss[ss] = []
                         sigma_to_loss[ss].append(vv)
-            """
+
             """
             u, fn_outs = sample(
                 partial(G, F=fno),
@@ -537,8 +538,8 @@ def run(args: Arguments, savedir: str):
                 )
 
             # Dump sigma_to_losses out to disk.
-            #with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
-            #    pickle.dump(sigma_to_loss, f)
+            with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
+                pickle.dump(sigma_to_loss, f)
 
             # Nikola's suggestion: print the mean sample for training
             # set and generated set.

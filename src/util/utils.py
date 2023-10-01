@@ -175,18 +175,19 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
 """
 
 def sample_trace(G, noise_sampler, sigma, u, epsilon=2e-5, T=100,
-                 denoise_eds=True,
                  verbose=True):
     L = sigma.size(0)
     if verbose:
         pbar = tqdm(total=L, desc="sample_trace")
     h = 1. / L
+    steps = sigma[0:-1] - sigma[1:]
     # start off with u ~ N(0, sigma_max*C)
     u = noise_sampler.sample(u.size(0))*torch.sqrt(sigma[0])
     for n in range(L-1):
 
         #tn = n / L          # t_n = n / N
         #tnp1 = (n+1) / L    # t_{n+1} = (n+1) / N
+        h = steps[n] / L
 
         z = noise_sampler.sample(u.size(0))
         u_prime = u + h*( G(u, sigma[n]) - u ) + sigma[n]*math.sqrt(2*h)*z
@@ -205,6 +206,7 @@ def sample_trace(G, noise_sampler, sigma, u, epsilon=2e-5, T=100,
         pbar.close()
 
     return torch.clamp(u, -1, 1)
+
 
 # Plotting functions
 

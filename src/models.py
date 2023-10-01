@@ -18,10 +18,15 @@ from .util import run_nerf_helpers
 class FNOBlocks_MyClass(FNOBlocks):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.t_mlps = nn.ModuleList([
-            nn.Linear(256, self.out_channels*2) for \
-                _ in range(self.n_layers*self.n_norms)
-        ])
+        t_mlps = []
+        for _ in range(self.n_layers*self.n_norms):
+            t_mlps.append(nn.Sequential(
+                nn.Linear(256, 256),
+                nn.GELU(),
+                nn.Linear(256, self.out_channels*2)
+            ))
+        self.t_mlps = nn.ModuleList(t_mlps)        
+
     def forward(self, x, index=0, output_shape=None, t_emb=None):
         """Just override forward, assume we are doing forward_with_postactivation"""
         x_skip_fno = self.fno_skips[index](x)
@@ -185,16 +190,17 @@ class UNO_Diffusion(nn.Module):
                 bw*1,
             ],
             operator_block=FNOBlocks_MyClass,
-            norm=norm,
             uno_n_modes=n_modes,
             horizontal_skips_map=horizontal_skips_map,
             uno_scalings=uno_scalings,
             factorization=factorization,
             rank=rank,
+            norm=norm,
             domain_padding_mode='symmetric',
             domain_padding=pad_factor,
         )
         print(self.uno)
+        print("norm:",norm)
 
         embedder, outdim = run_nerf_helpers.get_embedder(num_freqs=128, input_dims=1)
         self.embedder = embedder
