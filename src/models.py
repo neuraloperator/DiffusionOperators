@@ -43,9 +43,9 @@ class FNOBlocks_MyClass(FNOBlocks):
 
         if self.norm is not None:
             x_fno = self.norm[self.n_norms * index](x_fno)
-        t_scale, t_shift = self.t_mlps[self.n_norms*index](t_emb).chunk(2, dim=1)
-        x_fno = x_fno*t_scale.unsqueeze(-1).unsqueeze(-1) + \
-            t_shift.unsqueeze(-1).unsqueeze(-1)
+        #t_scale, t_shift = self.t_mlps[self.n_norms*index](t_emb).chunk(2, dim=1)
+        #x_fno = x_fno*t_scale.unsqueeze(-1).unsqueeze(-1) + \
+        #    t_shift.unsqueeze(-1).unsqueeze(-1)
 
         x = x_fno + x_skip_fno
 
@@ -111,8 +111,8 @@ class UNO_MyClass(UNO):
             x = self.domain_padding.unpad(x)
             #print("unpad:", x.shape)
 
-        #x = self.projection(x)
-        x = self.final(x)
+        x = self.projection(x)
+        #x = self.final(x)
         #print(x.shape)
         
         return x
@@ -126,6 +126,7 @@ class UNO_Diffusion(nn.Module):
                  npad: int, 
                  fmult: float,
                  rank: float = 1.0,
+                 num_freqs: int = 32,
                  norm: Union[str, None] = None,
                  factorization: str = None,):
         super().__init__()
@@ -172,9 +173,15 @@ class UNO_Diffusion(nn.Module):
             fmult, n_modes
         ))
 
+        embedder, fourier_dim = run_nerf_helpers.get_embedder(
+            num_freqs=num_freqs,
+            input_dims=1
+        )
+        self.embedder = embedder
+
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO_MyClass(
-            in_channels=in_channels+2,  # +2 because of grid we pass + sigma
+            in_channels=in_channels+2+fourier_dim,  # +2 because of grid we pass + sigma
             out_channels=out_channels,
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
@@ -202,9 +209,6 @@ class UNO_Diffusion(nn.Module):
         print(self.uno)
         print("norm:",norm)
 
-        embedder, outdim = run_nerf_helpers.get_embedder(num_freqs=128, input_dims=1)
-        self.embedder = embedder
-
     def get_grid(self, shape: Tuple[int]):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
         gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
@@ -214,13 +218,24 @@ class UNO_Diffusion(nn.Module):
         return torch.cat((gridx, gridy), dim=-1)
         
     def forward(self, x: torch.FloatTensor, sigmas: torch.FloatTensor):
-        """As per the paper 'Improved techniques for training SBGMs',
-          define s(x; sigma_t) = f(x) / sigma_t.
         """
-        t_emb = self.embedder(sigmas.view(-1, 1))
+        """
+        if sigmas.size(0) != x.size(0):
+            raise ValueError("sigmas.size(0) must be == x.size(0), got {} and {}".\
+                format(sigmas.size(0), x.size(0)))
+
+        # (bs, 1, 1, 1) -> (bs, 1, 1, n_freq)
+        t_emb = self.embedder(sigmas)
+        
         grid = self.get_grid(x.shape).to(x.device)
-        x = torch.cat((x, grid), dim=-1)
+        
+        x = torch.cat((
+            x,
+            grid, 
+            t_emb.repeat(1, x.size(1), x.size(2), 1)
+        ), dim=-1)
         x = x.swapaxes(-1,-2).swapaxes(-2,-3)
+        
         result = self.uno(x, t_emb)
         return result.swapaxes(1,2).swapaxes(2,3)
 

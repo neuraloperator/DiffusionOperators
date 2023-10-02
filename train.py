@@ -85,6 +85,7 @@ class Arguments:
     rank: float = 1.0                           # factorisation coefficient
     groups: int = 0                             # NOT USED
     norm: Union[str,None] = None
+    num_freqs: int = 32                         # number of frequency features for sigma
 
     # do we use signal-noise ratio to determine step size during sampling?
     use_snr: bool = False                       
@@ -213,6 +214,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         npad=args.npad,
         rank=args.rank,
         fmult=args.fmult,
+        num_freqs=args.num_freqs,
         factorization=args.factorization,
     ).to(device)
     # (fno)
@@ -296,8 +298,9 @@ def sample_sigma(bs, P_mean=-1.2, P_std=1.2):
     ln_sigma = torch.zeros((bs, 1)).normal_(P_mean, P_std)
     return torch.exp(ln_sigma)
 
-def G(u, sigma, F=None):
-    sigma = sigma.view(-1, 1, 1, 1)
+def G(u: torch.FloatTensor, sigma: torch.FloatTensor, F=None):
+    """we assume sigma here is 0-d and take care of it"""
+    sigma = sigma.view(-1, 1, 1, 1).repeat(u.size(0), 1, 1, 1)
     return cskip(sigma)*u + cout(sigma)*F( cin(sigma)*u, cnoise(sigma) )
 
 def run(args: Arguments, savedir: str):
