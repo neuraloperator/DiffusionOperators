@@ -166,7 +166,7 @@ def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
     this_sigmas = sigma
     # noise = sqrt(sigma_i) * (L * epsilon)
     # loss = || noise + sigma_i * F(u+noise) ||^2
-    noise = torch.sqrt(this_sigmas) * noise_sampler.sample(bsize)
+    noise = this_sigmas * noise_sampler.sample(bsize)
     term1 = this_sigmas * fno(u+noise, this_sigmas)
     term2 = noise
 
@@ -407,7 +407,6 @@ def run(args: Arguments, savedir: str):
             total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()                    # map strings to metrics
-        sigma_to_loss = dict()          # map sigma value to loss
         fno.train()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
@@ -426,18 +425,7 @@ def run(args: Arguments, savedir: str):
             )
             loss = losses.mean()
 
-            """
-            if eval_model:
-                # If this is an evaluation epoch, log sigma -> loss for the entire
-                # data loader.
-                with torch.no_grad():
-                    for ss, vv in zip(sampled_sigma.cpu().flatten(), losses.cpu()):
-                        ss = ss.item()
-                        vv = vv.item()
-                        if ss not in sigma_to_loss:
-                            sigma_to_loss[ss] = []
-                        sigma_to_loss[ss].append(vv)
-            """
+
             """
             u, fn_outs = sample(
                 fno,
@@ -461,6 +449,7 @@ def run(args: Arguments, savedir: str):
                     free_mem = mem_info[0] / 1024. / 1024.
                     total_mem = mem_info[1] / 1024. / 1024.
                     used_mem = total_mem - free_mem
+                    logger.debug("used mem: {}, total: {}".format(used_mem, total_mem))
 
             if ema_helper is not None:
                 ema_helper.update()
