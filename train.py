@@ -135,7 +135,8 @@ def sample(
     n_batches = int(math.ceil(n_examples / bs))
 
     for _ in range(n_batches):
-        u = noise_sampler.sample(bs)
+        # u_0 ~ N(0, sigma_max * C)
+        u = noise_sampler.sample(bs) * sigma[0]
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
@@ -149,11 +150,6 @@ def sample(
         fn_outputs = {
             k: torch.cat(v, dim=0)[0:n_examples] for k, v in fn_outputs.items()
         }
-    if len(buf) != n_examples:
-        print(
-            "WARNING: some NaNs were in the generated samples, there were only "
-            + "{} / {} valid samples generated".format(len(buf), n_examples)
-        )
     # assert len(buf) == n_examples
     return buf, fn_outputs
 
