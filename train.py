@@ -9,7 +9,6 @@ from typing import List, Union, Tuple, Dict
 from omegaconf import OmegaConf as OC
 
 import torch
-from scipy.stats import wasserstein_distance as w_distance
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torchvision import transforms
 
@@ -19,17 +18,20 @@ from src.util.ema import EMAHelper
 from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
                                        PeriodicGaussianRF2d)
 from src.util.setup_logger import get_logger
-from src.util.utils import (DotDict, count_params, avg_spectrum, circular_skew, circular_var,
+from src.util.utils import (DotDict, count_params, avg_spectrum,
                             plot_matrix, plot_noise, plot_samples,
                             plot_samples_grid, sample_trace, sigma_sequence,
                             auto_suggest_sigma1,
                             auto_suggest_epsilon,
-                            to_phase, ValidationMetric)
+                            ValidationMetric)
 
 logger = get_logger(__name__)
 
 import numpy as np
 from tqdm import tqdm
+
+RUN_LOCAL = os.environ.get('RUN_LOCAL', False)
+logger.debug("RUN_LOCAL={}".format(RUN_LOCAL))
 
 # import scipy.io
 
@@ -126,32 +128,21 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
 
 @torch.no_grad()
 def sample(
-    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5
 ):
     buf = []
-    if fns is not None:
-        fn_outputs = {k: [] for k in fns.keys()}
-
     n_batches = int(math.ceil(n_examples / bs))
-
     for _ in range(n_batches):
         # u_0 ~ N(0, sigma_max * C)
         u = noise_sampler.sample(bs) * sigma[0]
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
-        if fns is not None:
-            for fn_name, fn_apply in fns.items():
-                fn_outputs[fn_name].append(fn_apply(u).cpu())
+
         buf.append(u.cpu())
     buf = torch.cat(buf, dim=0)[0:n_examples]
-    # Flatten each list in fn outputs
-    if fns is not None:
-        fn_outputs = {
-            k: torch.cat(v, dim=0)[0:n_examples] for k, v in fn_outputs.items()
-        }
     # assert len(buf) == n_examples
-    return buf, fn_outputs
+    return buf
 
 def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
     """
@@ -360,10 +351,8 @@ def run(args: Arguments, savedir: str):
 
     # Compute the circular variance and skew on the training set
     # and save this to the experiment folder.
-    var_train = circular_var(train_dataset.x_train).numpy()
-    skew_train = circular_skew(train_dataset.x_train).numpy()
-    with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
-        pickle.dump(dict(var=var_train, skew=skew_train), f)
+    #with open(os.path.join(savedir, "gt_stats.pkl"), "wb") as f:
+    #    pickle.dump(dict(var=var_train, skew=skew_train), f)
 
     optimizer = torch.optim.Adam(fno.parameters(), lr=args.lr, foreach=True)
     logger.debug("optimizer: {}".format(optimizer))
@@ -394,6 +383,9 @@ def run(args: Arguments, savedir: str):
         ))
     else:
         lambda_fn = lambda_fns[args.lambda_fn]
+
+    postproc = train_dataset.postprocess
+    postproc_kwargs = train_dataset.postprocess_kwargs
 
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
@@ -460,7 +452,7 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            # if iter_ == 10: # TODO add debug flag
+            #if iter_ == 1: # TODO add debug flag
             #    break
 
             # TODO: refactor
@@ -469,40 +461,24 @@ def run(args: Arguments, savedir: str):
                     idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
                     this_sigmas = sigma[idcs]
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
-                    # print("noise magnitudes: min={}, max={}".format(noise.min(),
-                    #                                                noise.max()))
-
                     logger.info(os.path.join(savedir, "u_noised.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
-                        u[0:1].repeat(16, 1, 1, 1) + noise,
+                        postproc(u[0:1].repeat(16, 1, 1, 1) + noise),
                         outfile=os.path.join(savedir, "u_noised.png"),
                         subtitles=[
                             "u + {:.3f}*z".format(x) for x in this_sigmas.cpu().numpy()
                         ],
                         figsize=(8, 8),
+                        imshow_kwargs=postproc_kwargs
                     )
-
                     logger.info(os.path.join(savedir, "u_prior.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
-                        noise_sampler.sample(16),
+                        postproc(noise_sampler.sample(16)),
                         outfile=os.path.join(savedir, "u_prior.png"),
                         figsize=(8, 8),
-                    )
-
-                    x_train = train_dataset.x_train
-                    mean_samples = []
-                    for _ in range(16):
-                        perm = torch.randperm(len(x_train))[0:2048]
-                        mean_samples.append(x_train[perm].mean(dim=0, keepdims=True))
-                    mean_samples = torch.cat(mean_samples, dim=0)
-                    logger.info(os.path.join(savedir, "mean_subsamples.png"))
-                    plot_samples_grid(
-                        mean_samples,
-                        outfile=os.path.join(savedir, "mean_subsamples.png"),
-                        figsize=(8, 8),
-                        title="mean images over training set (size 2048 subsamples)",
+                        imshow_kwargs=postproc_kwargs
                     )
 
         pbar.close()
@@ -523,28 +499,19 @@ def run(args: Arguments, savedir: str):
 
         metric_vals = {} # store validation metrics
         if eval_model:
-
             with ema_helper:
                 # This context mgr automatically applies EMA
-                u, fn_outs = sample(
+                u = sample(
                     fno,
                     noise_sampler,
                     sigma,
                     bs=args.val_batch_size,
                     n_examples=args.Ntest,
                     T=args.T,
-                    epsilon=args.epsilon,
-                    fns={"skew": circular_skew, "var": circular_var},
+                    epsilon=args.epsilon
                 )
-                skew_generated = fn_outs["skew"]
-                var_generated = fn_outs["var"]
-
-            # Dump this out to disk as well.
-            w_skew = w_distance(skew_train, skew_generated)
-            w_var = w_distance(var_train, var_generated)
-            w_total = w_skew + w_var
-            metric_vals = {"w_skew": w_skew, "w_var": w_var, "w_total": w_total}
-
+            metric_vals = train_dataset.evaluate(u)
+            
             for ext in ["pdf", "png"]:
                 plot_samples(
                     u[0:5],
@@ -552,34 +519,6 @@ def run(args: Arguments, savedir: str):
                         savedir, "samples", "{}.{}".format(ep + 1, ext)
                     ),
                 )
-
-            # Dump sigma_to_losses out to disk.
-            #with open(os.path.join(savedir, "samples", "{}_s2l.pkl".format(ep+1)), "wb") as f:
-            #    pickle.dump(sigma_to_loss, f)
-
-            # Nikola's suggestion: print the mean sample for training
-            # set and generated set.
-            this_train_mean = train_dataset.x_train.mean(dim=0, keepdim=True)
-            this_gen_mean = u.mean(dim=0, keepdim=True).detach().cpu()
-
-            mean_image_l2 = torch.mean((this_train_mean - this_gen_mean) ** 2)
-            metric_vals["mean_image_l2"] = mean_image_l2.item()
-
-            mean_image_phase_l2 = torch.mean(
-                (to_phase(this_train_mean) - to_phase(this_gen_mean)) ** 2
-            )
-            metric_vals["mean_image_phase_l2"] = mean_image_phase_l2.item()
-
-            mean_samples = torch.cat(
-                (this_train_mean, this_gen_mean),
-                dim=0,
-            )
-            plot_samples(
-                mean_samples,  # of shape (2, res, res, 2)
-                outfile=os.path.join(
-                    savedir, "samples", "mean_sample_{}.png".format(ep + 1)
-                ),
-            )
 
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
@@ -589,7 +528,7 @@ def run(args: Arguments, savedir: str):
                     )
                     for ext in ["pdf", "png"]:
                         plot_samples(
-                            u[0:5],
+                            postproc(u[0:5]),
                             outfile=os.path.join(
                                 savedir, "samples", "best_{}.{}".format(metric_key, ext)
                             ),
@@ -599,6 +538,7 @@ def run(args: Arguments, savedir: str):
                                     metric_key: "{:.3f}".format(metric_val),
                                 }
                             ),
+                            imshow_kwargs=postproc_kwargs
                         )
                     # TODO: refactor
                     torch.save(
@@ -638,15 +578,16 @@ def run(args: Arguments, savedir: str):
 
         # Save checkpoints
         # TODO: refactor
-        torch.save(
-            dict(
-                weights=fno.state_dict(),
-                metrics={k: v.state_dict() for k, v in metric_trackers.items()},
-                ema_helper=ema_helper.state_dict(),
-                last_epoch=ep,
-            ),
-            os.path.join(savedir, "model.pt"),
-        )
+        if not RUN_LOCAL:
+            torch.save(
+                dict(
+                    weights=fno.state_dict(),
+                    metrics={k: v.state_dict() for k, v in metric_trackers.items()},
+                    ema_helper=ema_helper.state_dict(),
+                    last_epoch=ep,
+                ),
+                os.path.join(savedir, "model.pt"),
+            )
 
 
 if __name__ == "__main__":

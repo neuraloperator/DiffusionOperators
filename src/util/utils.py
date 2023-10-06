@@ -3,7 +3,7 @@ import torch.fft as fft
 from tqdm import tqdm
 import numpy as np 
 
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 import os
 import matplotlib.pyplot as plt
@@ -75,39 +75,6 @@ def auto_suggest_epsilon(sigmas, T: float):
     argmin = torch.argmin( (ratio - 1.)**2 ).item()
 
     return epsilon[argmin]
-
-def to_phase(samples: torch.Tensor):
-    assert samples.size(-1) == 2, "Last dim should be 2d"
-    phase = torch.atan2(samples[...,1], samples[...,0])
-    phase = (phase + np.pi) % (2 * np.pi) - np.pi
-    return phase
-
-def circular_var(x: torch.Tensor, dim=None):
-    """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
-    #R = torch.sqrt((x.mean(dim=(1,2))**2).sum(dim=1))
-    phase = to_phase(x)
-    
-    C1 = torch.cos(phase).sum(dim=(1,2))
-    S1 = torch.sin(phase).sum(dim=(1,2))
-    R1 = torch.sqrt(C1**2 + S1**2) / (phase.shape[1]*phase.shape[2])
-    return 1 - R1
-
-def circular_skew(x: torch.Tensor):
-    """Extracted from: https://github.com/kazizzad/GANO/blob/main/GANO_volcano.ipynb"""
-    phase = to_phase(x)
-    
-    C1 = torch.cos(phase).sum(dim=(1,2))
-    S1 = torch.sin(phase).sum(dim=(1,2))
-    R1 = torch.sqrt(C1**2 + S1**2) / (phase.shape[1]*phase.shape[2])
-    
-    C2 = torch.cos(2*phase).sum(dim=(1,2))
-    S2 = torch.sin(2*phase).sum(dim=(1,2))
-    R2 = torch.sqrt(C2**2 + S2**2) / (phase.shape[1]*phase.shape[2])
-    
-    T1 = torch.atan2(S1, C1)
-    T2 = torch.atan2(S2, C2)
-
-    return R2 * torch.sin(T2 - 2*T1) / (1 - R1)**(3/2)
 
 def sigma_sequence(sigma_1, sigma_L, L):
     a = (sigma_L/sigma_1)**(1.0/(L-1))
@@ -233,8 +200,11 @@ def plot_matrix(matrix: torch.Tensor, outfile: str, title: str = None, figsize=(
         fig.suptitle(title)
     fig.savefig(outfile, bbox_inches='tight')
 
-def plot_samples(samples: torch.Tensor, outfile: str, title: str = None, 
+def plot_samples(samples: torch.Tensor, 
+                 outfile: str, 
+                 title: str = None, 
                  subtitles=None,
+                 imshow_kwargs={},
                  figsize=(16,4)):
     """LEGACY function"""
     basedir = os.path.dirname(outfile)
@@ -245,11 +215,9 @@ def plot_samples(samples: torch.Tensor, outfile: str, title: str = None,
         assert len(subtitles) == ncol
     fig, ax = plt.subplots(1, ncol, figsize=figsize)
     for j in range(ncol):
-        phase = to_phase(samples[j]).cpu().detach().numpy()
-        bar = ax[j].imshow(phase,  
-                           cmap='RdYlBu', 
-                           vmin = -np.pi, 
-                           vmax=np.pi,extent=[0,1,0,1])
+        sample = samples[j].cpu().detach().numpy()
+        bar = ax[j].imshow(sample,
+                           **imshow_kwargs)
         if subtitles is not None:
             ax[j].set_title(subtitles[j])
     cax = fig.add_axes(
@@ -267,6 +235,7 @@ def plot_samples_grid(samples: torch.Tensor,
                       nrow_ncol: Tuple[int] = None,
                       title: str = None,
                       subtitles: List[str] = None,
+                      imshow_kwargs: Dict = {},
                       figsize: Tuple[float] = (16,4)):
     basedir = os.path.dirname(outfile)
     if not os.path.exists(basedir):
@@ -281,12 +250,11 @@ def plot_samples_grid(samples: torch.Tensor,
     fig, ax = plt.subplots(nrow, ncol, figsize=figsize)
     for i in range(nrow):
         for j in range(ncol):
-            phase = to_phase(samples[i*nrow +j]).cpu().detach().numpy()
+            sample = samples[i*nrow + j].cpu().detach().numpy()
+            #phase = to_phase(samples[i*nrow +j]).cpu().detach().numpy()
             ax[i][j].imshow(
-                phase,  
-                cmap='RdYlBu', 
-                vmin = -np.pi, 
-                vmax=np.pi,extent=[0,1,0,1]
+                sample,
+                **imshow_kwargs
             )
             if subtitles is not None:
                 ax[i][j].set_title(subtitles[i*nrow + j])
