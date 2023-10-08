@@ -172,8 +172,13 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
     return x0
 """
 
-def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100, 
-                 denoise_eds=True,
+def sample_trace(score,
+                 noise_sampler,
+                 sigma,
+                 u,
+                 epsilon=2e-5, 
+                 T=100,
+                 denoise_step=True,
                  verbose=True):
     L = sigma.size(0)
     if verbose:
@@ -183,15 +188,46 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
         for t in range(T):
             this_score = score(u, sigma[j].view(1,1,1,1))
             this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
-            if j == L - 1 and t == T - 1:
-                # denoising step
-                #if denoise_eds:
-                #    # trick from jolicoeur-martineau
-                #    u = this_score
-                #else:
-                u = u + sigma[-1]**2 * this_score
-            else:
-                u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
+            u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
+        if torch.isnan(u).any().item():
+            raise ValueError("NaNs generated, you may have to decrease epsilon here")
+        pbar.set_description("alpha={}, u norm={}".format(
+            alpha, 
+            torch.sqrt((u**2).sum(dim=(1,2,3))).mean().item()
+        ))
+        if verbose:
+            pbar.update(1)
+    if denoise_step:
+        u = u + sigma[-1]**2 * this_score
+    else:
+        u = u + alpha*this_score
+    if verbose:
+        pbar.close()
+    return u
+
+def sample_trace_pc(score, 
+                    noise_sampler, 
+                    sigma, 
+                    u, 
+                    epsilon=2e-5, 
+                    T=100,
+                    denoise_step=True,
+                    verbose=True):
+    """Predictor-corrector sampler"""
+    L = sigma.size(0)
+    if verbose:
+        pbar = tqdm(total=L, desc="sample_trace")
+    for j in range(L-1):
+        alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
+        # Predictor step:
+        utilde = u + (sigma[j]**2-sigma[j+1]**2) * score(u, sigma[j].view(1,1,1,1))
+        this_z = noise_sampler.sample(u.size(0))
+        u = utilde + torch.sqrt(sigma[j]**2 - sigma[j+1]**2) * this_z
+        # Corrector steps:
+        for _ in range(T):
+            this_score = score(u, sigma[j].view(1,1,1,1))
+            this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
+            u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
         if torch.isnan(u).any().item():
             raise ValueError("NaNs generated, you may have to decrease epsilon here")
         pbar.set_description("alpha={}, u norm={}".format(
@@ -199,10 +235,50 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
         ))
         if verbose:
             pbar.update(1)
+    if denoise_step:
+        u = u + sigma[-1]**2 * this_score
+    else:
+        u = u + alpha*this_score
     if verbose:
         pbar.close()
-        
-    return torch.clamp(u, -1, 1)
+    return u
+
+def sample_trace_heun(
+    score, 
+    noise_sampler, 
+    sigma, 
+    u, 
+    epsilon=2e-5, 
+    T=100,
+    denoise_step=True,
+    verbose=True
+):
+    """Heun's method, but fixed to T=1 (I need to fix this)"""
+    L = sigma.size(0)
+    #logger.warning("For Heun's method T is not used here")
+    if verbose:
+        pbar = tqdm(total=L, desc="sample_trace")
+    for j in range(L-1):
+        alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
+        this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
+        this_score = score(u, sigma[j].view(1,1,1,1))
+        utilde = u + alpha*this_score
+        u = u + (alpha/2) * ( this_score + score(utilde, sigma[j+1].view(1,1,1,1)) ) + \
+            torch.sqrt(2*alpha)*this_z
+        if torch.isnan(u).any().item():
+            raise ValueError("NaNs generated, you may have to decrease epsilon here")
+        pbar.set_description("alpha={}, u norm={}".format(
+            alpha, torch.sqrt((u**2).sum(dim=(1,2,3))).mean().item()
+        ))
+        if verbose:
+            pbar.update(1)
+    if denoise_step:
+        u = u + sigma[-1]**2 * this_score
+    else:
+        u = u + alpha*this_score
+    if verbose:
+        pbar.close()
+    return u
 
 # Plotting functions
 

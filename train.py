@@ -21,7 +21,11 @@ from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
 from src.util.setup_logger import get_logger
 from src.util.utils import (DotDict, count_params, avg_spectrum, circular_skew, circular_var,
                             plot_matrix, plot_noise, plot_samples,
-                            plot_samples_grid, sample_trace, sigma_sequence,
+                            plot_samples_grid, 
+                            sample_trace, 
+                            sample_trace_heun,
+                            sample_trace_pc,
+                            sigma_sequence,
                             auto_suggest_sigma1,
                             auto_suggest_epsilon,
                             to_phase, ValidationMetric)
@@ -30,6 +34,8 @@ logger = get_logger(__name__)
 
 import numpy as np
 from tqdm import tqdm
+
+from functools import partial
 
 # import scipy.io
 
@@ -73,6 +79,8 @@ class Arguments:
     L: int = 10                                 # how many noise schedules, len(sigmas)
     lambda_fn: str = 's^2'                      # what weighting function do we use?
 
+    sampler: str = 'euler'                      # either 'euler' or 'heun'
+
     rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
 
@@ -86,7 +94,9 @@ class Arguments:
     groups: int = 0                             # NOT USED
 
     # do we use signal-noise ratio to determine step size during sampling?
-    use_snr: bool = False                       
+    use_snr: bool = False
+
+    denoise_step: bool = True             
 
     lr: float = 1e-3                            # learning rate for training
     Ntest: int = 1024                           # number of samples to compute for validation metrics
@@ -125,21 +135,23 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
 
 
 @torch.no_grad()
-def sample(
-    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None
+def _sample(
+    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5, fns=None, sample_fn=sample_trace,
 ):
     buf = []
     if fns is not None:
         fn_outputs = {k: [] for k in fns.keys()}
-
     n_batches = int(math.ceil(n_examples / bs))
-
+    norms = []
     for _ in range(n_batches):
         # u_0 ~ N(0, sigma_max * C)
         u = noise_sampler.sample(bs) * sigma[0]
-        u = sample_trace(
+        u = sample_fn(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
+        unorm = torch.sqrt((u**2).sum(dim=(1,2,3))).mean().item()
+        norms.append(unorm)
+        u = torch.clamp(u, -1, 1)
         if fns is not None:
             for fn_name, fn_apply in fns.items():
                 fn_outputs[fn_name].append(fn_apply(u).cpu())
@@ -151,7 +163,7 @@ def sample(
             k: torch.cat(v, dim=0)[0:n_examples] for k, v in fn_outputs.items()
         }
     # assert len(buf) == n_examples
-    return buf, fn_outputs
+    return buf, fn_outputs, norms
 
 def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
     """
@@ -162,15 +174,11 @@ def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
     this_sigmas = sigma
     # noise = sqrt(sigma_i) * (L * epsilon)
     # loss = || noise + sigma_i * F(u+noise) ||^2
-    noise = this_sigmas * noise_sampler.sample(bsize)
+    Le = noise_sampler.sample(bsize)
+    noise = this_sigmas * Le
     term1 = this_sigmas * fno(u+noise, this_sigmas)
-    term2 = noise
-
-    res_sq = u.size(1) * u.size(2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
-
-    loss = (terms_flattened**2).mean()
-
+    term2 = Le
+    loss = ((term1+term2)**2).mean()
     return loss
 
 def score_matching_loss(fno, u, sigma, noise_sampler, 
@@ -181,7 +189,7 @@ def score_matching_loss(fno, u, sigma, noise_sampler,
     eps_L = noise_sampler.sample(bsize)         # structured noise
     noise = torch.sqrt(sigma) * eps_L           # scaled by variance
     term1 = fno(u+noise, sigma)
-    term2 = eps_L * (1. / torch.sqrt(sigma))    # see my eqn 12 overleaf
+    term2 = eps_L * (1. / sigma)    # see my eqn 12 overleaf
 
     res_sq = u.size(1) * u.size(2)
 
@@ -395,6 +403,14 @@ def run(args: Arguments, savedir: str):
     else:
         lambda_fn = lambda_fns[args.lambda_fn]
 
+    sampler_fns = {
+        'euler': sample_trace,
+        'heun': sample_trace_heun,
+        'pc': sample_trace_pc,
+    }
+    logger.debug("sampler: {}".format(args.sampler))
+    sample = partial(_sample, sample_fn=sampler_fns[args.sampler])
+
     for ep in range(start_epoch, args.epochs):
         t1 = default_timer()
         eval_model = (ep + 1) % args.record_interval == 0
@@ -526,7 +542,7 @@ def run(args: Arguments, savedir: str):
 
             with ema_helper:
                 # This context mgr automatically applies EMA
-                u, fn_outs = sample(
+                u, fn_outs, norms = sample(
                     fno,
                     noise_sampler,
                     sigma,
@@ -543,7 +559,12 @@ def run(args: Arguments, savedir: str):
             w_skew = w_distance(skew_train, skew_generated)
             w_var = w_distance(var_train, var_generated)
             w_total = w_skew + w_var
-            metric_vals = {"w_skew": w_skew, "w_var": w_var, "w_total": w_total}
+            metric_vals = {
+                "w_skew": w_skew, 
+                "w_var": w_var, 
+                "w_total": w_total
+            }
+            metric_vals["u_norm"] = np.mean(norms)
 
             for ext in ["pdf", "png"]:
                 plot_samples(
@@ -583,6 +604,8 @@ def run(args: Arguments, savedir: str):
 
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
+                if metric_key not in metric_trackers:
+                    continue
                 if metric_trackers[metric_key].update(metric_val):
                     print(
                         "new best metric for {}: {:.3f}".format(metric_key, metric_val)
