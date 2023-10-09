@@ -52,7 +52,7 @@ class UNO_MyClass(UNO):
                 #print("cur_output:", cur_output)
                 
             x = self.fno_blocks[layer_idx](x, output_shape=cur_output)
-            #print("{}:".format(layer_idx), x.shape)
+            print("{}:".format(layer_idx), x.shape)
 
             if layer_idx in self.horizontal_skips_map.values():
                 #skip_outputs[layer_idx] = self.horizontal_skips[str(layer_idx)](x)

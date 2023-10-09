@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torchvision import transforms
 
-from src.datasets import VolcanoDataset
+from src.datasets import VolcanoDataset, NavierStokesDataset
 from src.models import UNO_Diffusion
 from src.util.ema import EMAHelper
 from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
@@ -52,32 +52,44 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+DATASET_TO_CLASS = dict(
+    volcano=VolcanoDataset,
+    navier_stokes=NavierStokesDataset
+)
 
 @dataclass
 class Arguments:
 
+    # -- TRAINING --
     batch_size: int = 16                        # training batch size
     val_batch_size: int = 512                   # validation batch size
     epochs: int = 100                           # train for how many epochs
     val_size: float = 0.1                       # NOT USED
     record_interval: int = 100                  # eval valid metrics every this many epochs
-    white_noise: bool = False                   # use white noise instead of RBF
     augment: bool = False                       # perform light data augmentation
+    ema_rate: Union[float, None] = None         # moving average coefficient for EMA
+    lr: float = 1e-3                            # learning rate for training
+    num_workers: int = 2                        # number of cpu workers
 
+    # -- DATASET --
+    dataset: str = 'volcano'                    # name of dataset
+
+    # -- EVALUATION --
+    Ntest: int = 1024                           # number of samples to compute for validation metrics
+        
+    # -- DIFFUSION --
+    white_noise: bool = False                   # use white noise instead of RBF
     schedule: str = None                        # either 'geometric' or 'linear'
-
-    resolution: Union[int, None] = None         # dataset resolution
-
     epsilon: float = 2e-5                       # step size to use during generation (SGLD)
     sigma_1: Union[float, None] = 1.0           # variance of largest noise distribution
     sigma_L: float = 0.01                       # variance of smallest noise distribution
     T: int = 100                                # how many corrector steps per predictor step
     L: int = 10                                 # how many noise schedules, len(sigmas)
     lambda_fn: str = 's^2'                      # what weighting function do we use?
-
     rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
 
+    # -- ARCHITECTURE --
     factorization: Union[str,None] = None       # factorization, type (see FNOBlocks)
     npad: int = 8                               # how much do we pad the original input?
     d_co_domain: int = 32                       # base width for UNO
@@ -90,22 +102,9 @@ class Arguments:
     # do we use signal-noise ratio to determine step size during sampling?
     use_snr: bool = False                       
 
-    lr: float = 1e-3                            # learning rate for training
-    Ntest: int = 1024                           # number of samples to compute for validation metrics
-    num_workers: int = 2                        # number of cpu workers
     log_sigmas: bool = True                     # log losses per value of sigma
-    ema_rate: Union[float, None] = None         # moving average coefficient for EMA
 
-def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
-    """Return training and validation split of dataset
-
-    While it is messy, we use just a monolithic args
-      object here so that it is easy to initialise
-      the train/val dataset from other files when
-      we load the experiment cfg file in.
-
-    """
-    # Dataset generation.
+def get_dataset(args: DotDict) -> Dataset:
     datadir = os.environ.get("DATA_DIR", None)
     if datadir is None:
         raise ValueError("Environment variable DATA_DIR must be set")
@@ -117,14 +116,13 @@ def get_dataset(args: DotDict) -> Tuple[Dataset, Dataset]:
                 transforms.RandomVerticalFlip(p=0.5),
             ]
         )
-    logger.debug("resolution: {}".format(args.resolution))
-    dataset = VolcanoDataset(
+    dataset_class = DATASET_TO_CLASS[args.dataset]
+    
+    dataset = dataset_class(
         root=datadir,
-        resolution=args.resolution,
         transform=transform
     )
     return dataset
-
 
 @torch.no_grad()
 def sample(
@@ -198,12 +196,12 @@ def init_model(args, savedir, checkpoint="model.pt"):
     train_dataset = get_dataset(args)
 
     # Initialise the model
-    logger.debug("res: {}, dataset.x_train.shape = {}".format(
-        args.resolution, train_dataset.x_train.shape
+    logger.debug("dataset.x_train.shape = {}".format(
+        train_dataset.X.shape
     ))
     fno = UNO_Diffusion(
-        in_channels=2,
-        out_channels=2,
+        in_channels=train_dataset.n_in,
+        out_channels=train_dataset.n_in,
         base_width=args.d_co_domain,
         spatial_dim=train_dataset.res,
         npad=args.npad,
@@ -400,6 +398,9 @@ def run(args: Arguments, savedir: str):
             optimizer.zero_grad()
 
             u = u.to(device)
+
+            print(u.shape)
+            
             # Sample a noise scale per element in the minibatch
             idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
             sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)

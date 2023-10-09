@@ -4,11 +4,14 @@ from torch.utils.data import Dataset, Subset
 from typing import Tuple, Dict
 import glob
 import numpy as np
+import os
 
 from .util.setup_logger import get_logger
 logger = get_logger(__name__)
 
 from scipy.stats import wasserstein_distance as w_distance
+
+from einops import rearrange
 
 
 
@@ -63,12 +66,9 @@ def to_phase(samples: torch.Tensor):
 
 class FunctionDataset(Dataset):
     """
-    This abstraction was created for the following reasons:
-    - To make it clear that the original dataset gets cropped.
-    - To provide convenience functions for cropping the dataset.
-    - To record the 'amount' of the image cropped out (the 'padding')
-      as well as the actual resolution of the image.
     """
+    def __init__(self, transform=None):
+        self.transform = transform
     
     @property
     def X(self) -> torch.Tensor:
@@ -78,29 +78,78 @@ class FunctionDataset(Dataset):
     def res(self) -> int:
         raise NotImplementedError("This method should return the spatial dimension of the dataset")
 
+    @property
+    def n_in(self) -> int:
+        return None
+
     def evaluate(self, samples) -> Dict:
         raise NotImplementedError()
 
+    def _to_channels_first(self, x):
+        return rearrange(x, 'h w f -> f h w')
+
+    def _to_channels_last(self, x):
+        return rearrange(x, 'f h w -> h w f')
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idc):
+        if self.transform is None:
+            return self.X[idc]
+        else:
+            # convert back to (h, w, f) format
+            return self._to_channels_last(
+                self.transform(
+                    # convert to (f, h, w) format
+                    self._to_channels_first(self.X[idc])
+                )
+            )
+
+    def postprocess(self, samples: torch.Tensor):
+        return samples
+
+    @property
+    def postprocess_kwargs(self):
+        return {}
+
+SPLIT_ALLOWED = ['train', 'test']
+
+class NavierStokesDataset(FunctionDataset):
+    def __init__(self, root: str, split: str = 'train', **kwargs):
+        super().__init__(**kwargs)
+        if split == 'train':
+            dataset = torch.load(
+                os.path.join(root, "ns", "nsforcing_128_train.pt")
+            )['y']
+        elif split == 'test':
+            dataset = torch.load(
+                os.path.join(root, "ns", "nsforcing_128_test.pt")
+            )['y']
+        else:
+            raise ValueError("'split' must be one of either: {}".format(SPLIT_ALLOWED))
+        dataset = dataset.unsqueeze(1)
+        self.dataset = rearrange(dataset, 'N f h w -> N h w f')
+        
+    @property
+    def res(self) -> int:
+        return self.dataset.size(-1)
+
+    @property
+    def n_in(self) -> int:
+        return 1
+
+    @property
+    def X(self) -> torch.Tensor:
+        return self.dataset
+
 class VolcanoDataset(FunctionDataset):
-    """
-    The resolution of this dataset is 120x120px, obtained by loading in
-      the original 128x128 data and cropping out a 120x120 region from 
-      the top left corner of the image.
-
-    Notes
-    -----
-
-    (Chris B): The cropping decision is weird, why not just center
-      crop from the middle, i.e. crop by npad//2 for each edge???
-      If we want to emulate what a padded conv does then we should
-      be padding each edge as well.
-    """
 
     def __init__(self, root, ntrain=4096, resolution=None, transform=None):
 
         super().__init__()
 
-        files = glob.glob("{}/**/*.int".format(root), recursive=True)[:ntrain]
+        files = glob.glob("{}/volcano/*/*.int".format(root), recursive=True)[:ntrain]
         if len(files) == 0:
             raise Exception("Cannot find any *.int files here.")
         logger.info("# files detected: {}".format(len(files)))
@@ -172,28 +221,3 @@ class VolcanoDataset(FunctionDataset):
     @property
     def res(self):
         return self.x_train.size(1)
-
-    def _to_fhw(self, x):
-        """Convert x into format (f, h, w)"""
-        assert len(x.shape) == 3
-        return x.swapaxes(2,1).swapaxes(1,0)
-
-    def _to_hwf(self, x):
-        """Convert x into format (h, w, f)"""
-        assert len(x.shape) == 3
-        return x.swapaxes(0,1).swapaxes(1,2)
-
-    def __len__(self):
-        return len(self.x_train)
-
-    def __getitem__(self, idc):
-        if self.transform is None:
-            return self.x_train[idc]
-        else:
-            # convert back to (h, w, f) format
-            return self._to_hwf(
-                self.transform(
-                    # convert to (f, h, w) format
-                    self._to_fhw(self.x_train[idc])
-                )
-            )
