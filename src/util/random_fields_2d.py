@@ -153,8 +153,9 @@ class GaussianRF_RBF(object):
 
     @torch.no_grad()
     def __init__(
-        self, Ln1, Ln2, scale=1, eps=0.01, device=None
+        self, n_in, Ln1, Ln2, scale=1, eps=0.01, device=None
     ):
+        self.n_in = n_in
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
@@ -178,14 +179,14 @@ class GaussianRF_RBF(object):
         # L_padded = self.L.repeat(N, 1, 1)
         # z_mat = torch.randn((N, self.Ln1*self.Ln2, 2)).to(self.device)
         # sample = torch.bmm(L_padded, z_mat)
-        samples = torch.zeros((N, self.Ln1 * self.Ln2, 2)).to(self.device)
+        samples = torch.zeros((N, self.Ln1 * self.Ln2, self.n_in)).to(self.device)
         for ix in range(N):
             # (s^2, s^2) * (s^2, 2) -> (s^2, 2)
-            this_z = torch.randn(self.Ln1 * self.Ln2, 2).to(self.device)
+            this_z = torch.randn(self.Ln1 * self.Ln2, self.n_in).to(self.device)
             samples[ix] = torch.matmul(self.L, this_z)
 
         # reshape into (N, s, s, 2)
-        sample_rshp = samples.reshape(-1, self.Ln1, self.Ln2, 2)
+        sample_rshp = samples.reshape(-1, self.Ln1, self.Ln2, self.n_in)
 
         return sample_rshp
 

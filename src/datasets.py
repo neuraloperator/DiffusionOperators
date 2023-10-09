@@ -6,6 +6,8 @@ import glob
 import numpy as np
 import os
 
+import numpy.random as np_random
+
 from .util.setup_logger import get_logger
 logger = get_logger(__name__)
 
@@ -64,6 +66,19 @@ def to_phase(samples: torch.Tensor):
     phase = (phase + np.pi) % (2 * np.pi) - np.pi
     return phase
 
+def dissipation(w, Re):
+    T = w.shape[0]
+    s = w.shape[1]
+    w = w.reshape(T, s*s)
+    return torch.mean(w**2, dim=1) / Re
+
+def TKE(u):
+    T = u.shape[0]
+    s = u.shape[1]
+    u = u.reshape(T, s*s)
+    umean = torch.mean(u, dim=0)
+    return torch.mean((u-umean)**2, dim=1)
+
 class FunctionDataset(Dataset):
     """
     """
@@ -82,19 +97,16 @@ class FunctionDataset(Dataset):
     def n_in(self) -> int:
         return None
 
-    def evaluate(self, samples) -> Dict:
-        raise NotImplementedError()
-
-    def _to_channels_first(self, x):
+    def _to_channels_first(self, x: torch.Tensor):
         return rearrange(x, 'h w f -> f h w')
 
-    def _to_channels_last(self, x):
+    def _to_channels_last(self, x: torch.Tensor):
         return rearrange(x, 'f h w -> h w f')
 
     def __len__(self):
         return len(self.X)
 
-    def __getitem__(self, idc):
+    def __getitem__(self, idc: int):
         if self.transform is None:
             return self.X[idc]
         else:
@@ -106,7 +118,12 @@ class FunctionDataset(Dataset):
                 )
             )
 
+    def evaluate(self, samples: torch.Tensor) -> Dict:
+        """Given generated samples, return validation metrics"""
+        return {}
+    
     def postprocess(self, samples: torch.Tensor):
+        """Used by plotting functions"""
         return samples
 
     @property
@@ -114,6 +131,8 @@ class FunctionDataset(Dataset):
         return {}
 
 SPLIT_ALLOWED = ['train', 'test']
+
+
 
 class NavierStokesDataset(FunctionDataset):
     def __init__(self, root: str, split: str = 'train', **kwargs):
@@ -133,7 +152,7 @@ class NavierStokesDataset(FunctionDataset):
         
     @property
     def res(self) -> int:
-        return self.dataset.size(-1)
+        return self.dataset.size(1)
 
     @property
     def n_in(self) -> int:
@@ -142,6 +161,23 @@ class NavierStokesDataset(FunctionDataset):
     @property
     def X(self) -> torch.Tensor:
         return self.dataset
+
+    def evaluate(self, samples: torch.FloatTensor):
+        # Compute density
+        data_flattened = self.dataset.reshape(-1).numpy()
+        with torch.no_grad():
+            samples_flattened = samples.reshape(-1).cpu().numpy()
+
+        data_flattened = data_flattened[
+            np_random.permutation(len(data_flattened))[:10000000]
+        ]
+        samples_flattened = samples_flattened[
+            np_random.permutation(len(samples_flattened))[:10000000]
+        ]
+        return {
+            "w_density": w_distance(data_flattened, samples_flattened)
+        }
+        
 
 class VolcanoDataset(FunctionDataset):
 

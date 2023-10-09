@@ -64,7 +64,6 @@ class Arguments:
     batch_size: int = 16                        # training batch size
     val_batch_size: int = 512                   # validation batch size
     epochs: int = 100                           # train for how many epochs
-    val_size: float = 0.1                       # NOT USED
     record_interval: int = 100                  # eval valid metrics every this many epochs
     augment: bool = False                       # perform light data augmentation
     ema_rate: Union[float, None] = None         # moving average coefficient for EMA
@@ -136,30 +135,22 @@ def sample(
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
         )  # (bs, res, res, 2)
-
         buf.append(u.cpu())
     buf = torch.cat(buf, dim=0)[0:n_examples]
     # assert len(buf) == n_examples
     return buf
 
-def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn):
-    """
-    """
-
+def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn, verbose=False):
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
     this_sigmas = sigma
     # noise = sqrt(sigma_i) * (L * epsilon)
     # loss = || noise + sigma_i * F(u+noise) ||^2
-    noise = this_sigmas * noise_sampler.sample(bsize)
+    Le = noise_sampler.sample(bsize)
+    noise = this_sigmas * Le
     term1 = this_sigmas * fno(u+noise, this_sigmas)
-    term2 = noise
-
-    res_sq = u.size(1) * u.size(2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
-
-    loss = (terms_flattened**2).mean()
-
+    term2 = Le
+    loss = ((term1+term2)**2).mean()
     return loss
 
 def score_matching_loss(fno, u, sigma, noise_sampler, 
@@ -251,15 +242,17 @@ def init_model(args, savedir, checkpoint="model.pt"):
     # TODO: make this and sigma part of the model, not outside of it.
     if args.white_noise:
         logger.warning("Noise distribution: independent Gaussian noise")
-        noise_sampler = IndependentGaussian(
+        noise_sampler = IndependentGaussian( 
+            train_dataset.n_in,
             train_dataset.res, 
             train_dataset.res, 
-            sigma=1.0, 
+            sigma=1.0,
             device=device
         )
     else:
         logger.debug("Noise distribution: RBF noise")
         noise_sampler = GaussianRF_RBF(
+            train_dataset.n_in,
             train_dataset.res, 
             train_dataset.res, 
             scale=args.rbf_scale, 
@@ -356,13 +349,7 @@ def run(args: Arguments, savedir: str):
     logger.debug("optimizer: {}".format(optimizer))
 
     f_write = open(os.path.join(savedir, "results.json"), "a")
-    metric_trackers = {
-        "w_skew": ValidationMetric(),
-        "w_var": ValidationMetric(),
-        "w_total": ValidationMetric(),
-        "mean_image_l2": ValidationMetric(),
-        "mean_image_phase_l2": ValidationMetric(),
-    }
+    metric_trackers = {}
     if val_metrics is not None:
         for key in val_metrics:
             metric_trackers[key].load_state_dict(val_metrics[key])
@@ -390,7 +377,7 @@ def run(args: Arguments, savedir: str):
         eval_model = (ep + 1) % args.record_interval == 0
 
         pbar = tqdm(
-            total=len(train_loader), desc="Train {}/{}".format(ep + 1, args.epochs)
+            total=len(train_loader), desc="{}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()                    # map strings to metrics
         fno.train()
@@ -398,8 +385,6 @@ def run(args: Arguments, savedir: str):
             optimizer.zero_grad()
 
             u = u.to(device)
-
-            print(u.shape)
             
             # Sample a noise scale per element in the minibatch
             idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
@@ -410,13 +395,14 @@ def run(args: Arguments, savedir: str):
                 u, 
                 sampled_sigma, 
                 noise_sampler,
-                lambda_fn
+                lambda_fn,
+                verbose=(iter_==0)
             )
             loss = losses.mean()
 
 
             """
-            u, fn_outs = sample(
+            u  = sample(
                 fno,
                 noise_sampler,
                 sigma,
@@ -424,7 +410,7 @@ def run(args: Arguments, savedir: str):
                 n_examples=args.Ntest,
                 T=args.T,
                 epsilon=args.epsilon,
-                fns={"skew": circular_skew, "var": circular_var},
+                #fns={"skew": circular_skew, "var": circular_var},
             )
             """
 
@@ -453,8 +439,8 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            #if iter_ == 1: # TODO add debug flag
-            #    break
+            if iter_ == 1: # TODO add debug flag
+                break
 
             # TODO: refactor
             if iter_ == 0 and ep == 0:
@@ -462,6 +448,7 @@ def run(args: Arguments, savedir: str):
                     idcs = torch.linspace(0, len(sigma) - 1, 16).long().to(u.device)
                     this_sigmas = sigma[idcs]
                     noise = this_sigmas.view(-1, 1, 1, 1) * noise_sampler.sample(16)
+                    noise = noise.to(u.device)
                     logger.info(os.path.join(savedir, "u_noised.png"))
                     plot_samples_grid(
                         # Use the same example, and make a 4x4 grid of points
@@ -523,6 +510,11 @@ def run(args: Arguments, savedir: str):
 
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
+                if metric_key not in metric_trackers:
+                    logger.info("Detected metric {}, creating metric tracker...".\
+                        format(metric_key))
+                    metric_trackers[metric_key] = ValidationMetric()
+                
                 if metric_trackers[metric_key].update(metric_val):
                     print(
                         "new best metric for {}: {:.3f}".format(metric_key, metric_val)
@@ -553,6 +545,7 @@ def run(args: Arguments, savedir: str):
                         ),
                         os.path.join(savedir, "model.{}.pt".format(metric_key)),
                     )
+                    """
                     with open(
                         os.path.join(
                             savedir, "samples", "best_{}.pkl".format(metric_key)
@@ -560,7 +553,7 @@ def run(args: Arguments, savedir: str):
                         "wb",
                     ) as f:
                         pickle.dump(dict(var=var_generated, skew=skew_generated), f)
-
+                    """
         else:
             pass
 

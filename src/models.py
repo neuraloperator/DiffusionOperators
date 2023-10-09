@@ -52,7 +52,7 @@ class UNO_MyClass(UNO):
                 #print("cur_output:", cur_output)
                 
             x = self.fno_blocks[layer_idx](x, output_shape=cur_output)
-            print("{}:".format(layer_idx), x.shape)
+            #print("{}:".format(layer_idx), x.shape)
 
             if layer_idx in self.horizontal_skips_map.values():
                 #skip_outputs[layer_idx] = self.horizontal_skips[str(layer_idx)](x)
@@ -166,6 +166,7 @@ class UNO_Diffusion(nn.Module):
         """As per the paper 'Improved techniques for training SBGMs',
           define s(x; sigma_t) = f(x) / sigma_t.
         """
+        
         grid = self.get_grid(x.shape).to(x.device)
         x = torch.cat((x, grid), dim=-1)
         x = x.swapaxes(-1,-2).swapaxes(-2,-3)
