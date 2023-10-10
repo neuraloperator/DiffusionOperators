@@ -135,7 +135,7 @@ SPLIT_ALLOWED = ['train', 'test']
 
 
 class NavierStokesDataset(FunctionDataset):
-    def __init__(self, root: str, split: str = 'train', **kwargs):
+    def __init__(self, root: str, resolution: int, split: str = 'train', **kwargs):
         super().__init__(**kwargs)
         if split == 'train':
             dataset = torch.load(
@@ -148,6 +148,13 @@ class NavierStokesDataset(FunctionDataset):
         else:
             raise ValueError("'split' must be one of either: {}".format(SPLIT_ALLOWED))
         dataset = dataset.unsqueeze(1)
+        if resolution is not None:
+            assert type(resolution) is int
+            dataset = F.interpolate(
+                dataset, 
+                size=(resolution, resolution),
+                mode='bilinear'
+            )
         self.dataset = rearrange(dataset, 'N f h w -> N h w f')
         
     @property

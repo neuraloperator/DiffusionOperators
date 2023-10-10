@@ -72,6 +72,7 @@ class Arguments:
 
     # -- DATASET --
     dataset: str = 'volcano'                    # name of dataset
+    resolution: Union[int, None] = None         # resolution
 
     # -- EVALUATION --
     Ntest: int = 1024                           # number of samples to compute for validation metrics
@@ -79,7 +80,8 @@ class Arguments:
     # -- DIFFUSION --
     white_noise: bool = False                   # use white noise instead of RBF
     schedule: str = None                        # either 'geometric' or 'linear'
-    epsilon: float = 2e-5                       # step size to use during generation (SGLD)
+    # step size to use during generation (SGLD)
+    epsilons: List[float] = field(default_factory=lambda:[1e-5, 1e-6, 1e-7])
     sigma_1: Union[float, None] = 1.0           # variance of largest noise distribution
     sigma_L: float = 0.01                       # variance of smallest noise distribution
     T: int = 100                                # how many corrector steps per predictor step
@@ -120,6 +122,7 @@ def get_dataset(args: DotDict) -> Dataset:
     
     dataset = dataset_class(
         root=datadir,
+        resolution=args.resolution,
         transform=transform
     )
     return dataset
@@ -131,7 +134,7 @@ def sample(
     buf = []
     n_batches = int(math.ceil(n_examples / bs))
     for _ in range(n_batches):
-        # u_0 ~ N(0, sigma_max * C)
+        # u_0 ~ N(0, sigma_max * C
         u = noise_sampler.sample(bs) * sigma[0]
         u = sample_trace(
             fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
@@ -414,7 +417,7 @@ def run(args: Arguments, savedir: str):
                 bs=args.val_batch_size,
                 n_examples=args.Ntest,
                 T=args.T,
-                epsilon=args.epsilon,
+                epsilon=args.epsilons[0],
                 #fns={"skew": circular_skew, "var": circular_var},
             )
             """
@@ -491,32 +494,40 @@ def run(args: Arguments, savedir: str):
         # scheduler.step()
 
         metric_vals = {} # store validation metrics
+        saved_samples = []
         if eval_model:
-            with ema_helper:
-                # This context mgr automatically applies EMA
-                u = sample(
-                    fno,
-                    noise_sampler,
-                    sigma,
-                    bs=args.val_batch_size,
-                    n_examples=args.Ntest,
-                    T=args.T,
-                    epsilon=args.epsilon
+            for epsilon in args.epsilons:
+                logger.debug("Sampling with epsilon={}".format(epsilon))
+                with ema_helper:
+                    # This context mgr automatically applies EMA
+                    u = sample(
+                        fno,
+                        noise_sampler,
+                        sigma,
+                        bs=args.val_batch_size,
+                        n_examples=args.Ntest,
+                        T=args.T,
+                        epsilon=epsilon
+                    )
+                u = torch.clamp(
+                    u,
+                    train_dataset.X.min(),
+                    train_dataset.X.max()
                 )
-            u = torch.clamp(
-                u, 
-                train_dataset.X.min(),
-                train_dataset.X.max()
-            )
-            metric_vals = train_dataset.evaluate(u)
-            
-            for ext in ["pdf", "png"]:
-                plot_samples(
-                    u[0:5],
-                    outfile=os.path.join(
-                        savedir, "samples", "{}.{}".format(ep + 1, ext)
-                    ),
-                )
+                saved_samples.append(u)
+                this_metric_vals = train_dataset.evaluate(u)
+                this_metric_vals = {(str(epsilon)+"_"+k):v for k,v in this_metric_vals.items()}
+                logger.debug(str(this_metric_vals))
+                metric_vals.update(this_metric_vals)
+
+            for u, epsilon in zip(saved_samples, args.epsilons):
+                for ext in ["pdf", "png"]:
+                    plot_samples(
+                        u[0:5],
+                        outfile=os.path.join(
+                            savedir, "samples", "{}-{}.{}".format(ep + 1, epsilon, ext)
+                        ),
+                    )
 
             # Keep track of each metric, and save the following:
             for metric_key, metric_val in metric_vals.items():
@@ -529,6 +540,7 @@ def run(args: Arguments, savedir: str):
                     print(
                         "new best metric for {}: {:.3f}".format(metric_key, metric_val)
                     )
+                    """
                     for ext in ["pdf", "png"]:
                         plot_samples(
                             postproc(u[0:5]),
@@ -543,6 +555,7 @@ def run(args: Arguments, savedir: str):
                             ),
                             imshow_kwargs=postproc_kwargs
                         )
+                    """
                     # TODO: refactor
                     torch.save(
                         dict(
