@@ -151,11 +151,6 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
             this_score = score(u, sigma[j].view(1,1,1,1))
             this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
             if j == L - 1 and t == T - 1:
-                # denoising step
-                #if denoise_eds:
-                #    # trick from jolicoeur-martineau
-                #    u = this_score
-                #else:
                 u = u + sigma[-1]**2 * this_score
             else:
                 u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
@@ -168,8 +163,7 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
             pbar.update(1)
     if verbose:
         pbar.close()
-        
-    return torch.clamp(u, -1, 1)
+    return u
 
 # Plotting functions
 

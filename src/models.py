@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from typing import List
+
 from neuralop.models import UNO
 
 from .util.setup_logger import get_logger
@@ -76,6 +78,7 @@ class UNO_Diffusion(nn.Module):
                  out_channels: int,
                  base_width: int,
                  spatial_dim: int,
+                 mult_dims: List[float],
                  npad: int, 
                  fmult: float,
                  rank: float = 1.0,
@@ -115,16 +118,24 @@ class UNO_Diffusion(nn.Module):
         for scale_factor in uno_scalings:
             _curr_res[0] = _curr_res[0]*scale_factor
             _curr_res[1] = _curr_res[1]*scale_factor
+            max_modes = int((_curr_res[0]*_curr_res[1]) // 2)
+            max_modes_per_res = int(np.sqrt(max_modes))
             # n modes is basically res//2 (well, +1 as well)
             # so do (res//2) * fmult
             n_modes.append(
-                ( int(fmult*(_curr_res[0]/2)), int(fmult*(_curr_res[1]/2)) )
+                (int(max_modes_per_res*fmult), int(max_modes_per_res*fmult))
             )
+            logger.debug("{}x{}: max mode per res: {}, # retained per res: {}".format(
+                int(_curr_res[0]), int(_curr_res[1]),
+                max_modes_per_res,
+                int(max_modes_per_res*fmult)
+            ))
 
-        logger.debug("fmult={}, n_modes={}".format(
-            fmult, n_modes
-        ))
+        #logger.debug("fmult={}, n_modes={}".format(
+        #    fmult, n_modes
+        #))
 
+        logger.debug("norm: {}".format(norm))
 
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO_MyClass(
@@ -133,15 +144,15 @@ class UNO_Diffusion(nn.Module):
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
             uno_out_channels=[
-                bw*1, 
-                bw*2,
-                bw*4,
-                bw*4,
+                bw*mult_dims[0], 
+                bw*mult_dims[1],
+                bw*mult_dims[2],
+                bw*mult_dims[3],
                 #
-                bw*4,
-                bw*4,
-                bw*2,
-                bw*1,
+                bw*mult_dims[3],
+                bw*mult_dims[2],
+                bw*mult_dims[1],
+                bw*mult_dims[0],
             ],
             norm=norm,
             uno_n_modes=n_modes,
@@ -152,7 +163,7 @@ class UNO_Diffusion(nn.Module):
             domain_padding_mode='symmetric',
             domain_padding=pad_factor,
         )
-        print(self.uno)
+        #print(self.uno)
 
     def get_grid(self, shape: Tuple[int]):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]

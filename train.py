@@ -89,6 +89,7 @@ class Arguments:
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
 
     # -- ARCHITECTURE --
+    norm: Union[str,None] = None
     factorization: Union[str,None] = None       # factorization, type (see FNOBlocks)
     npad: int = 8                               # how much do we pad the original input?
     d_co_domain: int = 32                       # base width for UNO
@@ -195,6 +196,8 @@ def init_model(args, savedir, checkpoint="model.pt"):
         out_channels=train_dataset.n_in,
         base_width=args.d_co_domain,
         spatial_dim=train_dataset.res,
+        mult_dims=args.mult_dims,
+        norm=args.norm,
         npad=args.npad,
         rank=args.rank,
         fmult=args.fmult,
@@ -380,6 +383,7 @@ def run(args: Arguments, savedir: str):
             total=len(train_loader), desc="{}/{}".format(ep + 1, args.epochs)
         )
         buf = dict()                    # map strings to metrics
+        buf_sigmas = []                 # track sampled sigmas
         fno.train()
         for iter_, u in enumerate(train_loader):
             optimizer.zero_grad()
@@ -387,8 +391,11 @@ def run(args: Arguments, savedir: str):
             u = u.to(device)
             
             # Sample a noise scale per element in the minibatch
-            idcs = torch.randperm(sigma.size(0))[0:u.size(0)].to(u.device)
+            idcs = np.random.randint(0, len(sigma), size=(u.size(0),))
+            idcs = torch.LongTensor(idcs).to(u.device)
             sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
+            buf_sigmas.append(sampled_sigma.flatten())
+            
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
             losses = score_matching_loss_OLD(
                 fno, 
@@ -399,8 +406,6 @@ def run(args: Arguments, savedir: str):
                 verbose=(iter_==0)
             )
             loss = losses.mean()
-
-
             """
             u  = sample(
                 fno,
@@ -439,8 +444,8 @@ def run(args: Arguments, savedir: str):
                     buf[k] = []
                 buf[k].append(v)
 
-            if iter_ == 1: # TODO add debug flag
-                break
+            #if iter_ == 1: # TODO add debug flag
+            #    break
 
             # TODO: refactor
             if iter_ == 0 and ep == 0:
@@ -498,6 +503,11 @@ def run(args: Arguments, savedir: str):
                     T=args.T,
                     epsilon=args.epsilon
                 )
+            u = torch.clamp(
+                u, 
+                train_dataset.X.min(),
+                train_dataset.X.max()
+            )
             metric_vals = train_dataset.evaluate(u)
             
             for ext in ["pdf", "png"]:
@@ -564,6 +574,10 @@ def run(args: Arguments, savedir: str):
         buf["gpu_total_mem"] = total_mem
         buf["lr"] = optimizer.state_dict()["param_groups"][0]["lr"]
         buf["time"] = default_timer() - t1
+        all_sigmas = torch.cat(buf_sigmas).flatten()
+        buf["s_min"] = all_sigmas.min().item()
+        buf["s_max"] = all_sigmas.max().item()
+        buf["s_mean"] = all_sigmas.mean().item()
         # buf["sched_lr"] = scheduler.get_lr()[0] # should be the same as buf.lr
         buf.update(metric_vals)
         f_write.write(json.dumps(buf) + "\n")
