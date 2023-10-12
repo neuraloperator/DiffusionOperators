@@ -191,14 +191,15 @@ class GaussianRF_RBF(object):
         return sample_rshp
 
 class IndependentGaussian(object):
-    def __init__(self, Ln1, Ln2, sigma=1, device=None):
+    def __init__(self, n_in, Ln1, Ln2, sigma=1, device=None):
+        self.n_in = n_in
         self.Ln1 = Ln1
         self.Ln2 = Ln2
         self.device = device
         self.sigma = sigma
 
     def sample(self, N):
-        z = torch.randn((N, self.Ln1, self.Ln2, 2)).normal_(0, self.sigma)
+        z = torch.randn((N, self.Ln1, self.Ln2, self.n_in)).normal_(0, self.sigma)
         if self.device is not None:
             z = z.to(self.device)
         return z

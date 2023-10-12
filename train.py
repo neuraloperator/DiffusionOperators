@@ -89,6 +89,7 @@ class Arguments:
     lambda_fn: str = 's^2'                      # what weighting function do we use?
     rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
+    t_scale: float = 0.01                        # scaling term for time embedding
 
     # -- ARCHITECTURE --
     norm: Union[str,None] = None
@@ -144,37 +145,39 @@ def sample(
     # assert len(buf) == n_examples
     return buf
 
-def score_matching_loss_OLD(fno, u, sigma, noise_sampler, lambda_fn, verbose=False):
+def score_matching_loss_OLD(fno, u, sigma, unscaled_noise, lambda_fn, verbose=False):
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
     this_sigmas = sigma
     # noise = sqrt(sigma_i) * (L * epsilon)
     # loss = || noise + sigma_i * F(u+noise) ||^2
-    Le = noise_sampler.sample(bsize)
+    Le = unscaled_noise
     noise = this_sigmas * Le
     term1 = this_sigmas * fno(u+noise, this_sigmas)
     term2 = Le
-    loss = ((term1+term2)**2).mean()
+    loss = ((term1+term2)**2).mean(dim=(1,2,3))
     return loss
 
-def score_matching_loss(fno, u, sigma, noise_sampler, 
-                        lambda_fn):
+def score_matching_loss(fno, u, sigma, 
+                        unscaled_noise, 
+                        lambda_fn, verbose=False):
     bsize = u.size(0)
-    # loss = \lambda(sigma) || F(u+noise; sigma) + Le/sqrt(sigma) ||^2
-    # and noise = \sqrt(sigma_i) L \epsilon, \epsilon ~ N(0,I).
-    eps_L = noise_sampler.sample(bsize)         # structured noise
-    noise = torch.sqrt(sigma) * eps_L           # scaled by variance
+    # loss = \lambda(sigma) || F(u+noise; sigma) + Le / sigma ||^2
+    # and noise = \sigma_i L \epsilon, \epsilon ~ N(0,I).
+    eps_L = unscaled_noise                      # N(0,C)
+    noise = sigma * eps_L                       # scaled by stdev
     term1 = fno(u+noise, sigma)
-    term2 = eps_L * (1. / torch.sqrt(sigma))    # see my eqn 12 overleaf
+    term2 = eps_L / sigma                       # see my eqn 12 overleaf
 
     res_sq = u.size(1) * u.size(2)
 
     # shape (bs, s^2, 2)
     terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
+    # squared l2 norm here
+    loss = (terms_flattened**2).mean(dim=(1,2))
     # shape (bs,)
     weights = lambda_fn(sigma).flatten()
     # shape (bs,)
-    loss = (terms_flattened**2).mean(dim=(1,2))
     # compute mean over minibatch
     weighted_loss = (weights*loss)
 
@@ -366,7 +369,8 @@ def run(args: Arguments, savedir: str):
         '1/s^2': lambda x: 1. / (x**2),
         's^2': lambda x: (x**2),
         'sqrt(s)': lambda x: torch.sqrt(x),
-        's': lambda x: x
+        's': lambda x: x, 
+        '1': lambda x: torch.ones_like(x)
     }
     if args.lambda_fn not in lambda_fns:
         raise Exception("lambda_fn must be one of: {}".format(
@@ -398,16 +402,17 @@ def run(args: Arguments, savedir: str):
             idcs = torch.LongTensor(idcs).to(u.device)
             sampled_sigma = sigma[idcs].view(-1, 1, 1, 1)
             buf_sigmas.append(sampled_sigma.flatten())
-            
+
+            unscaled_noise = noise_sampler.sample(u.size(0))
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            losses = score_matching_loss_OLD(
+            losses = score_matching_loss(
                 fno, 
                 u, 
                 sampled_sigma, 
-                noise_sampler,
+                unscaled_noise,
                 lambda_fn,
                 verbose=(iter_==0)
-            )
+            )            
             loss = losses.mean()
             """
             u  = sample(

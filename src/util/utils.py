@@ -147,11 +147,12 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
         pbar = tqdm(total=L, desc="sample_trace")
     for j in range(L):
         alpha = epsilon*((sigma[j]**2)/(sigma[-1])**2)
+        this_sigma = sigma[j].view(1,1,1,1).repeat(u.size(0), 1, 1, 1)
         for t in range(T):
-            this_score = score(u, sigma[j].view(1,1,1,1))
+            this_score = score(u, this_sigma)
             this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
             if j == L - 1 and t == T - 1:
-                u = u + sigma[-1]**2 * this_score
+                u = u + alpha * this_score
             else:
                 u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
         if torch.isnan(u).any().item():

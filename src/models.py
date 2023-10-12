@@ -18,39 +18,8 @@ from typing import Union, Tuple
 from neuralop.layers.resample import resample
 from neuralop.layers.fno_block import FNOBlocks 
 
-def get_sinusoidal_positional_embedding(
-    timesteps: torch.FloatTensor,
-    embedding_dim: int,
-    scale: float = 10000.,
-):
-    """
-    Copied and modified from https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/nn.py#L90
-    From Fairseq in https://github.com/pytorch/fairseq/blob/master/fairseq/modules/sinusoidal_positional_embedding.py#L15
-    Build sinusoidal embeddings.
-    This matches the implementation in tensor2tensor, but differs slightly
-    from the description in Section 3.5 of "Attention Is All You Need".
-    """
-    #assert len(timesteps.size()) == 1  # and timesteps.dtype == tf.int32
-    assert len(timesteps.size()) == 1 or len(timesteps.size()) == 2  # and timesteps.dtype == tf.int32
-    if len(timesteps.size()) == 1:
-        batch_size = timesteps.size(0)
-        index_dim = 1
-    else:
-        batch_size, index_dim = timesteps.size()
-        timesteps = timesteps.view(batch_size*index_dim)
-    timesteps = timesteps.to(torch.get_default_dtype())#float()
-    device = timesteps.device
-    half_dim = embedding_dim // 2
-    emb = math.log(scale) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, dtype=torch.float, device=device) * -emb)
-    # emb = torch.arange(num_embeddings, dtype=torch.float, device=device)[:, None] * emb[None, :]
-    emb = timesteps[..., None] * emb[None, :]
-    emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1) # bsz x embd
-    if embedding_dim % 2 == 1:  # zero pad to the last dimension
-        # emb = torch.cat([emb, torch.zeros(num_embeddings, 1, device=device)], dim=1)
-        emb = F.pad(emb, (0, 1), "constant", 0)
-    assert list(emb.size()) == [batch_size*index_dim, embedding_dim]
-    return emb.view(batch_size, index_dim*embedding_dim)
+from .util.time_embedding import TimestepEmbedding
+
 
 class FNOBlocks_MyClass(FNOBlocks):
     def __init__(self, *args, **kwargs):
@@ -80,9 +49,9 @@ class FNOBlocks_MyClass(FNOBlocks):
 
         if self.norm is not None:
             x_fno = self.norm[self.n_norms * index](x_fno)
-        t_scale, t_shift = self.t_mlps[self.n_norms*index](t_emb).chunk(2, dim=1)
-        x_fno = x_fno*t_scale.unsqueeze(-1).unsqueeze(-1) + \
-            t_shift.unsqueeze(-1).unsqueeze(-1)
+        #t_scale, t_shift = self.t_mlps[self.n_norms*index](t_emb).chunk(2, dim=1)
+        #x_fno = x_fno*t_scale.unsqueeze(-1).unsqueeze(-1) + \
+        #    t_shift.unsqueeze(-1).unsqueeze(-1)
 
         x = x_fno + x_skip_fno
 
@@ -164,6 +133,7 @@ class UNO_Diffusion(nn.Module):
                  npad: int, 
                  fmult: float,
                  rank: float = 1.0,
+                 t_scale: float = 2.0,          # scale factor for time embedding
                  norm: Union[str, None] = None,
                  factorization: str = None,):
         super().__init__()
@@ -177,6 +147,7 @@ class UNO_Diffusion(nn.Module):
         # with powers of two.
         uno_scalings = [
             1.0,    # 0, 128px
+            1.0,
             0.75,   # 1, 96px
             0.67,   # 2, 64px
             
@@ -186,11 +157,14 @@ class UNO_Diffusion(nn.Module):
             1.5,    # 5, 96px
             1.33,   # 6, 128px
             1.0,    # 7, 128px
+            1.0
         ]
         horizontal_skips_map = {
-            7: 0,
-            6: 1,
-            5: 2,
+            9: 0,
+            8: 1,
+            7: 2,
+            6: 3,
+            5: 4
         }
         
         # The number of fourier modes is just the resolution at that
@@ -221,11 +195,12 @@ class UNO_Diffusion(nn.Module):
 
         pad_factor = (float(npad)/2) / sdim
         self.uno = UNO_MyClass(
-            in_channels=in_channels+2,  # +2 because of grid we pass
+            in_channels=in_channels+2+1,  # +2 because of grid we pass + 1 time
             out_channels=out_channels,
             hidden_channels=bw,         # lift input to this no. channels   
             n_layers=len(uno_scalings), # number of fourier layers
             uno_out_channels=[
+                bw*mult_dims[0], 
                 bw*mult_dims[0], 
                 bw*mult_dims[1],
                 bw*mult_dims[2],
@@ -235,6 +210,7 @@ class UNO_Diffusion(nn.Module):
                 bw*mult_dims[2],
                 bw*mult_dims[1],
                 bw*mult_dims[0],
+                bw*mult_dims[0], 
             ],
             operator_block=FNOBlocks_MyClass,
             norm=norm,
@@ -248,6 +224,14 @@ class UNO_Diffusion(nn.Module):
             domain_padding=pad_factor,
         )
         #print(self.uno)
+
+        self.sdim = sdim
+        self.time = TimestepEmbedding(
+            embedding_dim=512,
+            hidden_dim=(self.sdim**2) // 2, 
+            output_dim=self.sdim**2,
+            scale=t_scale
+        )
 
     def get_grid(self, shape: Tuple[int]):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
@@ -265,9 +249,12 @@ class UNO_Diffusion(nn.Module):
         grid = self.get_grid(x.shape).to(x.device)
         x = torch.cat((x, grid), dim=-1)
         x = x.swapaxes(-1,-2).swapaxes(-2,-3)
+
+        t_emb = self.time(sigmas.view(-1, 1)).\
+            reshape(-1, 1, self.sdim, self.sdim)
+        x = torch.cat((x, t_emb), dim=1)        
         
-        t_emb = get_sinusoidal_positional_embedding(sigmas.flatten(), 256)
-        result = self.uno(x, t_emb=t_emb) / sigmas
+        result = self.uno(x, t_emb=None) / sigmas
         return result.swapaxes(1,2).swapaxes(2,3)
 
 if __name__ == '__main__':

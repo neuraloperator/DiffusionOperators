@@ -100,21 +100,30 @@ class Swish(nn.Module):
 
 
 class TimestepEmbedding(nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, output_dim, pos_dim=1, act=Swish()):
+    def __init__(self, 
+                 embedding_dim, 
+                 hidden_dim, 
+                 output_dim,
+                 scale=2.,
+                 act=Swish()):
         super().__init__()
 
         self.embedding_dim = embedding_dim
         self.output_dim = output_dim
         self.hidden_dim = hidden_dim
-        self.pos_dim = pos_dim
+        self.scale = scale
 
         self.main = nn.Sequential(
-            dense(embedding_dim*pos_dim, hidden_dim),
+            dense(embedding_dim, hidden_dim),
             act,
             dense(hidden_dim, output_dim),
         )
 
     def forward(self, temp):
-        temb = get_sinusoidal_positional_embedding(temp, self.embedding_dim)
+        temb = get_sinusoidal_positional_embedding(
+            temp, 
+            self.embedding_dim,
+            scale=self.scale
+        )
         temb = self.main(temb)
         return temb
