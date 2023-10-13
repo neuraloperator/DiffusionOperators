@@ -89,7 +89,7 @@ class Arguments:
     lambda_fn: str = 's^2'                      # what weighting function do we use?
     rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
-    t_scale: float = 0.01                        # scaling term for time embedding
+    t_scale: float = 2.0                        # scaling term for time embedding
 
     # -- ARCHITECTURE --
     norm: Union[str,None] = None
@@ -145,7 +145,7 @@ def sample(
     # assert len(buf) == n_examples
     return buf
 
-def score_matching_loss_OLD(fno, u, sigma, unscaled_noise, lambda_fn, verbose=False):
+def score_matching_loss_OLD(fno, u, sigma, unscaled_noise, verbose=False):
     bsize = u.size(0)
     # Sample a noise scale per element in the minibatch
     this_sigmas = sigma
@@ -155,33 +155,10 @@ def score_matching_loss_OLD(fno, u, sigma, unscaled_noise, lambda_fn, verbose=Fa
     noise = this_sigmas * Le
     term1 = this_sigmas * fno(u+noise, this_sigmas)
     term2 = Le
-    loss = ((term1+term2)**2).mean(dim=(1,2,3))
+    terms_weighted = (term1+term2)
+    
+    loss = (terms_weighted**2).mean(dim=(1,2,3))
     return loss
-
-def score_matching_loss(fno, u, sigma, 
-                        unscaled_noise, 
-                        lambda_fn, verbose=False):
-    bsize = u.size(0)
-    # loss = \lambda(sigma) || F(u+noise; sigma) + Le / sigma ||^2
-    # and noise = \sigma_i L \epsilon, \epsilon ~ N(0,I).
-    eps_L = unscaled_noise                      # N(0,C)
-    noise = sigma * eps_L                       # scaled by stdev
-    term1 = fno(u+noise, sigma)
-    term2 = eps_L / sigma                       # see my eqn 12 overleaf
-
-    res_sq = u.size(1) * u.size(2)
-
-    # shape (bs, s^2, 2)
-    terms_flattened = (term1 + term2).view(bsize, res_sq, -1)
-    # squared l2 norm here
-    loss = (terms_flattened**2).mean(dim=(1,2))
-    # shape (bs,)
-    weights = lambda_fn(sigma).flatten()
-    # shape (bs,)
-    # compute mean over minibatch
-    weighted_loss = (weights*loss)
-
-    return weighted_loss
 
 def init_model(args, savedir, checkpoint="model.pt"):
     """Return the model and datasets"""
@@ -204,6 +181,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         spatial_dim=train_dataset.res,
         mult_dims=args.mult_dims,
         norm=args.norm,
+        t_scale=args.t_scale,
         npad=args.npad,
         rank=args.rank,
         fmult=args.fmult,
@@ -361,7 +339,7 @@ def run(args: Arguments, savedir: str):
     metric_trackers = {}
     if val_metrics is not None:
         for key in val_metrics:
-            metric_trackers[key].load_state_dict(val_metrics[key])
+            #metric_trackers[key].load_state_dict(val_metrics[key])
             logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
     lambda_fns = {
@@ -405,12 +383,11 @@ def run(args: Arguments, savedir: str):
 
             unscaled_noise = noise_sampler.sample(u.size(0))
             # with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            losses = score_matching_loss(
+            losses = score_matching_loss_OLD(
                 fno, 
                 u, 
                 sampled_sigma, 
                 unscaled_noise,
-                lambda_fn,
                 verbose=(iter_==0)
             )            
             loss = losses.mean()
@@ -442,7 +419,7 @@ def run(args: Arguments, savedir: str):
             if ema_helper is not None:
                 ema_helper.update()
 
-            metrics = dict(loss=loss.item())
+            metrics = dict(loss=loss.item(), loss_std=losses.std().item())
             if iter_ % 10 == 0:
                 pbar.set_postfix(metrics)
 

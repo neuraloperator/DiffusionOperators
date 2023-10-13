@@ -252,7 +252,7 @@ class UNO_Diffusion(nn.Module):
 
         t_emb = self.time(sigmas.view(-1, 1)).\
             reshape(-1, 1, self.sdim, self.sdim)
-        x = torch.cat((x, t_emb), dim=1)        
+        x = torch.cat((x, t_emb), dim=1)    
         
         result = self.uno(x, t_emb=None) / sigmas
         return result.swapaxes(1,2).swapaxes(2,3)
