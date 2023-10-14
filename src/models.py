@@ -130,7 +130,7 @@ class UNO_Diffusion(nn.Module):
                  base_width: int,
                  spatial_dim: int,
                  mult_dims: List[float],
-                 npad: int, 
+                 npad: int,
                  fmult: float,
                  rank: float = 1.0,
                  t_scale: float = 2.0,          # scale factor for time embedding

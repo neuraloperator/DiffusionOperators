@@ -66,13 +66,47 @@ def to_phase(samples: torch.Tensor):
     phase = (phase + np.pi) % (2 * np.pi) - np.pi
     return phase
 
-def dissipation(w, Re):
+def spectrum2(u):
+
+    # Modified by Chris B: no need for these lines,
+    # infer s from the shape of u.
+    T = u.shape[0]
+    #u = u.reshape(T, s, s)
+    s = u.size(-1)
+    assert s == u.size(-2), "assert failed, assume width == height"
+    
+    u = torch.fft.fft2(u)
+
+    # 2d wavenumbers following Pytorch fft convention
+    k_max = s // 2
+    wavenumers = torch.cat((torch.arange(start=0, end=k_max, step=1), \
+                            torch.arange(start=-k_max, end=0, step=1)), 0).repeat(s, 1)
+    k_x = wavenumers.transpose(0, 1)
+    k_y = wavenumers
+
+    # Sum wavenumbers
+    sum_k = torch.abs(k_x) + torch.abs(k_y)
+    sum_k = sum_k.numpy()
+
+    # Remove symmetric components from wavenumbers
+    index = -1.0 * np.ones((s, s))
+    index[0:k_max + 1, 0:k_max + 1] = sum_k[0:k_max + 1, 0:k_max + 1]
+
+    spectrum = np.zeros((T, s))
+    for j in range(1, s + 1):
+        ind = np.where(index == j)
+        spectrum[:, j - 1] = np.sqrt( (u[:, ind[0], ind[1]].sum(axis=1)).abs() ** 2)
+
+    spectrum = spectrum.mean(axis=0)
+    return spectrum
+
+def dissipation(w, Re=500.0):    
     T = w.shape[0]
     s = w.shape[1]
     w = w.reshape(T, s*s)
     return torch.mean(w**2, dim=1) / Re
 
-def TKE(u):
+def TKE(u):    
     T = u.shape[0]
     s = u.shape[1]
     u = u.reshape(T, s*s)
@@ -163,6 +197,9 @@ class NavierStokesDataset(FunctionDataset):
     def postprocess(self, samples: torch.Tensor):
         """Used by plotting functions"""
         return samples*(self.max_-self.min_) + self.min_
+
+    def denormalize(self, samples):
+        return self.postprocess(samples)
         
     @property
     def res(self) -> int:
@@ -177,8 +214,11 @@ class NavierStokesDataset(FunctionDataset):
         return self.dataset
 
     def evaluate(self, samples: torch.FloatTensor):
+
+        dataset = self.denormalize(self.dataset)
+        
         # Compute density
-        data_flattened = self.dataset.reshape(-1).numpy()
+        data_flattened = dataset.reshape(-1).numpy()
         with torch.no_grad():
             samples_flattened = samples.reshape(-1).cpu().numpy()
 
@@ -188,8 +228,19 @@ class NavierStokesDataset(FunctionDataset):
         samples_flattened = samples_flattened[
             np_random.permutation(len(samples_flattened))[:10000000]
         ]
+        
+        # Compute dissipation 
+        data_spec = spectrum2(dataset.squeeze(-1))
+        sample_spec = spectrum2(samples.squeeze(-1))
+
+        # Compute TKE
+        data_tke = TKE(dataset.squeeze(-1))
+        sample_tke = TKE(samples.squeeze(-1))
+        
         return {
-            "w_density": w_distance(data_flattened, samples_flattened)
+            "w_density": w_distance(data_flattened, samples_flattened),
+            "w_spectrum": w_distance(data_spec, sample_spec),
+            "w_tke": w_distance(data_tke, sample_tke)
         }
         
 

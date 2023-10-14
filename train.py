@@ -69,36 +69,42 @@ class Arguments:
     ema_rate: Union[float, None] = None         # moving average coefficient for EMA
     lr: float = 1e-3                            # learning rate for training
     num_workers: int = 2                        # number of cpu workers
+    # --------------
 
     # -- DATASET --
     dataset: str = 'volcano'                    # name of dataset
     resolution: Union[int, None] = None         # resolution
+    # -------------
 
     # -- EVALUATION --
     Ntest: int = 1024                           # number of samples to compute for validation metrics
+    # ----------------
         
-    # -- DIFFUSION --
+    # ---- DIFFUSION ----
     white_noise: bool = False                   # use white noise instead of RBF
     schedule: str = None                        # either 'geometric' or 'linear'
-    # step size to use during generation (SGLD)
+    # step sizes to use during generation (SGLD)
     epsilons: List[float] = field(default_factory=lambda:[1e-5, 1e-6, 1e-7])
-    sigma_1: Union[float, None] = 1.0           # variance of largest noise distribution
+    # Largest standard deviation. If set to None, use the heuristic proposed in:
+    # - Song, Y., & Ermon, S. (2020). Improved techniques for training score-based generative models
+    sigma_1: Union[float, None] = 1.0
     sigma_L: float = 0.01                       # variance of smallest noise distribution
     T: int = 100                                # how many corrector steps per predictor step
     L: int = 10                                 # how many noise schedules, len(sigmas)
-    lambda_fn: str = 's^2'                      # what weighting function do we use?
+    lambda_fn: str = 's^2'                      # NOT USED
     rbf_scale: float = 1.0                      # scale parameter of the RBF kernel (determines smoothness)
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
     t_scale: float = 2.0                        # scaling term for time embedding
+    # -------------------
 
     # Do we use the denoising trick at the end? See:
     # - Song, Y., & Ermon, S. (2020). Improved techniques for training score-based generative models
     # - Jolicoeur-Martineau, A., Piché-Taillefer, R., Combes, R. T. D., & Mitliagkas, I. (2020). Adversarial score matching and improved sampling for image generation.
     denoise_eds: bool = False
 
-    # -- ARCHITECTURE --
+    # ---- ARCHITECTURE ----
     norm: Union[str, None] = None
-    factorization: Union[str, None] = None       # factorization, type (see FNOBlocks)
+    factorization: Union[str, None] = None      # factorization, type (see FNOBlocks)
     npad: int = 8                               # how much do we pad the original input?
     d_co_domain: int = 32                       # base width for UNO
     # each subsequent FNOBlock will have width `d_co_domain * mult_dims[i]`
@@ -106,8 +112,10 @@ class Arguments:
     fmult: float = 0.25                         # what proportion of Fourier modes to retain
     rank: float = 1.0                           # factorisation coefficient
     groups: int = 0                             # NOT USED
+    # ----------------------
 
     use_snr: bool = False                       # NOT USED
+    log_sigmas: bool = False                   # NOT USED
 
 def get_dataset(args: DotDict) -> Dataset:
     datadir = os.environ.get("DATA_DIR", None)
@@ -344,7 +352,7 @@ def run(args: Arguments, savedir: str):
     metric_trackers = {}
     if val_metrics is not None:
         for key in val_metrics:
-            #metric_trackers[key].load_state_dict(val_metrics[key])
+            metric_trackers[key].load_state_dict(val_metrics[key])
             logger.debug("set tracker: {}.best = {}".format(key, val_metrics[key]))
 
     lambda_fns = {
@@ -396,6 +404,7 @@ def run(args: Arguments, savedir: str):
                 verbose=(iter_==0)
             )            
             loss = losses.mean()
+            
             """
             u  = sample(
                 fno,
@@ -497,11 +506,7 @@ def run(args: Arguments, savedir: str):
                         epsilon=epsilon,
                         denoise_eds=args.denoise_eds
                     )
-                u = torch.clamp(
-                    u,
-                    train_dataset.X.min(),
-                    train_dataset.X.max()
-                )
+                u = train_dataset.denormalize(u)
                 saved_samples.append(u)
                 this_metric_vals = train_dataset.evaluate(u)
                 this_metric_vals = {(str(epsilon)+"_"+k):v for k,v in this_metric_vals.items()}
@@ -511,7 +516,7 @@ def run(args: Arguments, savedir: str):
             for u, epsilon in zip(saved_samples, args.epsilons):
                 for ext in ["pdf", "png"]:
                     plot_samples(
-                        u[0:5],
+                        postproc(u[0:5]),
                         outfile=os.path.join(
                             savedir, "samples", "{}-{}.{}".format(ep + 1, epsilon, ext)
                         ),

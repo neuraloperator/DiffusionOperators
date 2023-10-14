@@ -140,7 +140,7 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
 """
 
 def sample_trace(score, 
-                 noise_sampler, 
+                 noise_sampler,
                  sigma: torch.FloatTensor, 
                  u: torch.FloatTensor, 
                  epsilon: float = 2e-5, 
