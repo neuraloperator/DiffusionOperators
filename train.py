@@ -91,21 +91,23 @@ class Arguments:
     rbf_eps: float = 0.01                       # stability term for cholesky decomp. of C
     t_scale: float = 2.0                        # scaling term for time embedding
 
+    # Do we use the denoising trick at the end? See:
+    # - Song, Y., & Ermon, S. (2020). Improved techniques for training score-based generative models
+    # - Jolicoeur-Martineau, A., Piché-Taillefer, R., Combes, R. T. D., & Mitliagkas, I. (2020). Adversarial score matching and improved sampling for image generation.
+    denoise_eds: bool = False
+
     # -- ARCHITECTURE --
-    norm: Union[str,None] = None
-    factorization: Union[str,None] = None       # factorization, type (see FNOBlocks)
+    norm: Union[str, None] = None
+    factorization: Union[str, None] = None       # factorization, type (see FNOBlocks)
     npad: int = 8                               # how much do we pad the original input?
     d_co_domain: int = 32                       # base width for UNO
-    # NOT USED
+    # each subsequent FNOBlock will have width `d_co_domain * mult_dims[i]`
     mult_dims: List[int] = field(default_factory=lambda: [1, 2, 4, 4])
     fmult: float = 0.25                         # what proportion of Fourier modes to retain
     rank: float = 1.0                           # factorisation coefficient
     groups: int = 0                             # NOT USED
 
-    # do we use signal-noise ratio to determine step size during sampling?
-    use_snr: bool = False                       
-
-    log_sigmas: bool = True                     # log losses per value of sigma
+    use_snr: bool = False                       # NOT USED
 
 def get_dataset(args: DotDict) -> Dataset:
     datadir = os.environ.get("DATA_DIR", None)
@@ -130,15 +132,18 @@ def get_dataset(args: DotDict) -> Dataset:
 
 @torch.no_grad()
 def sample(
-    fno, noise_sampler, sigma, n_examples, bs, T, epsilon=2e-5
+    fno, noise_sampler, sigma, n_examples, bs, 
+    **kwargs
 ):
     buf = []
     n_batches = int(math.ceil(n_examples / bs))
     for _ in range(n_batches):
         # u_0 ~ N(0, sigma_max * C
         u = noise_sampler.sample(bs) * sigma[0]
+        # TODO convert these to kwargs
         u = sample_trace(
-            fno, noise_sampler, sigma, u, epsilon=epsilon, T=T
+            fno, noise_sampler, sigma, u,
+            **kwargs
         )  # (bs, res, res, 2)
         buf.append(u.cpu())
     buf = torch.cat(buf, dim=0)[0:n_examples]
@@ -489,7 +494,8 @@ def run(args: Arguments, savedir: str):
                         bs=args.val_batch_size,
                         n_examples=args.Ntest,
                         T=args.T,
-                        epsilon=epsilon
+                        epsilon=epsilon,
+                        denoise_eds=args.denoise_eds
                     )
                 u = torch.clamp(
                     u,

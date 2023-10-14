@@ -139,9 +139,14 @@ def sample_trace(score, noise_sampler, sigma, x0, epsilon=2e-5, T=100, verbose=T
     return x0
 """
 
-def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100, 
-                 denoise_eds=True,
-                 verbose=True):
+def sample_trace(score, 
+                 noise_sampler, 
+                 sigma: torch.FloatTensor, 
+                 u: torch.FloatTensor, 
+                 epsilon: float = 2e-5, 
+                 T: int = 100, 
+                 denoise_eds: bool = True,
+                 verbose: bool = True):
     L = sigma.size(0)
     if verbose:
         pbar = tqdm(total=L, desc="sample_trace")
@@ -152,7 +157,13 @@ def sample_trace(score, noise_sampler, sigma, u, epsilon=2e-5, T=100,
             this_score = score(u, this_sigma)
             this_z = noise_sampler.sample(u.size(0)) # z ~ N(0,C)
             if j == L - 1 and t == T - 1:
-                u = u + alpha * this_score
+                print(
+                    "score norm: {}".format(torch.sqrt((this_score**2).sum(dim=(1,2,3))).mean().item())
+                )
+                if denoise_eds:
+                    u = u + sigma[-1]**2 * this_score
+                else:
+                    u = u + alpha * this_score
             else:
                 u = u + alpha*this_score + torch.sqrt(2*alpha)*this_z
         if torch.isnan(u).any().item():
