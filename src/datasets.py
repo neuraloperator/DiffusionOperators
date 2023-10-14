@@ -155,7 +155,14 @@ class NavierStokesDataset(FunctionDataset):
                 size=(resolution, resolution),
                 mode='bilinear'
             )
-        self.dataset = rearrange(dataset, 'N f h w -> N h w f')
+        dataset = rearrange(dataset, 'N f h w -> N h w f')
+        self.max_ = dataset.max()
+        self.min_ = dataset.min()
+        self.dataset = ((dataset - self.min_) / (self.max_ - self.min_))
+
+    def postprocess(self, samples: torch.Tensor):
+        """Used by plotting functions"""
+        return samples*(self.max_-self.min_) + self.min_
         
     @property
     def res(self) -> int:

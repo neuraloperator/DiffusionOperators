@@ -198,7 +198,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
 
     if args.sigma_1 is None:
         args.sigma_1 = float(int(auto_suggest_sigma1(train_dataset.X)))
-        logger.debug("sigma_1 is None, auto-suggested value is: {}".format(args.sigma_1))
+    logger.debug("sigma_1 auto-suggested value is: {}".format(args.sigma_1))
 
     # Load checkpoint here if it exists.
     start_epoch = 0
