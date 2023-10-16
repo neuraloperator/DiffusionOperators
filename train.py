@@ -1,3 +1,4 @@
+
 import argparse
 import json
 import math
@@ -13,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torchvision import transforms
 
 from src.datasets import VolcanoDataset, NavierStokesDataset
-from src.models import UNO_Diffusion
+from src.models_old import UNO as UNO_Diffusion
 from src.util.ema import EMAHelper
 from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
                                        PeriodicGaussianRF2d)
@@ -187,19 +188,21 @@ def init_model(args, savedir, checkpoint="model.pt"):
     logger.debug("dataset.x_train.shape = {}".format(
         train_dataset.X.shape
     ))
+
     fno = UNO_Diffusion(
-        in_channels=train_dataset.n_in,
-        out_channels=train_dataset.n_in,
-        base_width=args.d_co_domain,
-        spatial_dim=train_dataset.res,
-        mult_dims=args.mult_dims,
-        norm=args.norm,
-        t_scale=args.t_scale,
-        npad=args.npad,
-        rank=args.rank,
+        train_dataset.n_in,
+        args.d_co_domain,
+        s=train_dataset.res,
+        pad=args.npad,
         fmult=args.fmult,
+        groups=args.groups,
         factorization=args.factorization,
+        rank=args.rank,
+        #num_freqs_input=args.num_freqs_input,
+        mult_dims=args.mult_dims,
     ).to(device)
+    
+
     # (fno)
     logger.info("# of trainable parameters: {}".format(count_params(fno)))
     fno = fno.to(device)
