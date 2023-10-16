@@ -14,9 +14,11 @@ from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 from torchvision import transforms
 
 from src.datasets import VolcanoDataset, NavierStokesDataset
-from src.models_old import UNO as UNO_Diffusion
+from src.models_very_old import UNO as UNO_Diffusion
 from src.util.ema import EMAHelper
-from src.util.random_fields_2d import (GaussianRF_RBF, IndependentGaussian,
+from src.util.random_fields_2d import (GaussianRF_RBF, 
+                                       GaussianRF_idct,
+                                       IndependentGaussian,
                                        PeriodicGaussianRF2d)
 from src.util.setup_logger import get_logger
 from src.util.utils import (DotDict, count_params, avg_spectrum,
@@ -167,11 +169,18 @@ def score_matching_loss_OLD(fno, u, sigma, unscaled_noise, verbose=False):
     # loss = || noise + sigma_i * F(u+noise) ||^2
     Le = unscaled_noise
     noise = this_sigmas * Le
+    
     term1 = this_sigmas * fno(u+noise, this_sigmas)
     term2 = Le
     terms_weighted = (term1+term2)
     
     loss = (terms_weighted**2).mean(dim=(1,2,3))
+
+    #loss = ((h**2)/bsize) * \
+    #    (
+    #        (sigma[r]*fno(u + noise, sigma[r].view(1,1)) + (1.0/sigma[r])*noise)**2
+    #    ).sum()
+    
     return loss
 
 def init_model(args, savedir, checkpoint="model.pt"):
@@ -194,14 +203,7 @@ def init_model(args, savedir, checkpoint="model.pt"):
         args.d_co_domain,
         s=train_dataset.res,
         pad=args.npad,
-        fmult=args.fmult,
-        groups=args.groups,
-        factorization=args.factorization,
-        rank=args.rank,
-        #num_freqs_input=args.num_freqs_input,
-        mult_dims=args.mult_dims,
     ).to(device)
-    
 
     # (fno)
     logger.info("# of trainable parameters: {}".format(count_params(fno)))
@@ -254,14 +256,21 @@ def init_model(args, savedir, checkpoint="model.pt"):
         )
     else:
         logger.debug("Noise distribution: RBF noise")
-        noise_sampler = GaussianRF_RBF(
-            train_dataset.n_in,
-            train_dataset.res, 
-            train_dataset.res, 
-            scale=args.rbf_scale, 
-            eps=args.rbf_eps, 
+        noise_sampler = GaussianRF_idct(
+            train_dataset.res, train_dataset.res,
+            alpha=1.5, 
+            tau=1, 
+            sigma = 0.1, 
             device=device
         )
+        #noise_sampler = GaussianRF_RBF(
+        #    train_dataset.n_in,
+        #    train_dataset.res, 
+        #    train_dataset.res, 
+        #    scale=args.rbf_scale, 
+        #    eps=args.rbf_eps, 
+        #    device=device
+        #)
 
     if args.sigma_1 < args.sigma_L:
         raise ValueError(

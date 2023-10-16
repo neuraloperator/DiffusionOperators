@@ -113,7 +113,7 @@ class GaussianRF_idct(object):
         self.coeff = C
 
     def sample(self, N, mul=1):
-        z_mat = np.zeros((N, self.Ln1, self.Ln2, 2), dtype=np.float32)
+        z_mat = np.zeros((N, self.Ln1, self.Ln2, 1), dtype=np.float32)
         for ix in range(N):
             z_mat[ix, :, :, :] = self._sample2d()
         # convert to torch tensor
@@ -128,7 +128,7 @@ class GaussianRF_idct(object):
         :return: GRF numpy.narray (Ln,Ln)
         """
         # # sample from normal discribution
-        xr = np.random.standard_normal(size=(self.Ln1, self.Ln2, 2))
+        xr = np.random.standard_normal(size=(self.Ln1, self.Ln2, 1))
         # coefficients in fourier domain
         L = np.einsum("ij,ijk->ijk", self.coeff, xr)
         L = (self.Ln1 * self.Ln1) ** (1 / 2) * L
@@ -136,7 +136,7 @@ class GaussianRF_idct(object):
         L[0, 0, :] = 0.0 * L[0, 0, :]
         # transform to real domain
         L[:, :, 0] = cv2.idct(L[:, :, 0])
-        L[:, :, 1] = cv2.idct(L[:, :, 1])
+        #L[:, :, 1] = cv2.idct(L[:, :, 1])
         return L
 
 
