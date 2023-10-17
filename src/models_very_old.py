@@ -165,7 +165,7 @@ class UNO(nn.Module):
         self.w5 = pointwise_op(4*factor*self.d_co_domain, self.d_co_domain, 64, 64) # will be reshaped
 
         self.fc1 = nn.Linear(2*self.d_co_domain, 4*self.d_co_domain)
-        self.fc2 = nn.Linear(4*self.d_co_domain, 2)
+        self.fc2 = nn.Linear(4*self.d_co_domain, in_d_co_domain)
 
     def forward(self, x, sigma):
         bsize = x.size(0)
@@ -244,8 +244,9 @@ class UNO(nn.Module):
         x_fc1 = F.gelu(x_fc1)
         
         x_out = self.fc2(x_fc1)
-        
-        x_out = torch.tanh(x_out)
+
+        #???
+        #x_out = torch.tanh(x_out)
         
         return x_out
     

@@ -259,8 +259,8 @@ def init_model(args, savedir, checkpoint="model.pt"):
         noise_sampler = GaussianRF_idct(
             train_dataset.res, train_dataset.res,
             alpha=1.5, 
-            tau=1, 
-            sigma = 0.1, 
+            tau=5., 
+            sigma = 4., 
             device=device
         )
         #noise_sampler = GaussianRF_RBF(
